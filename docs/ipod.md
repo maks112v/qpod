@@ -412,26 +412,20 @@ The asset holds Graphite's; `ringnav_playing` sets the current accent's. Tap or 
 is stock's label; the remaining time replaces stock's total. Sizes are `NP_*` constants in
 `tools/ipod.py`; see [internals.md](internals.md#now-playing-ipod).
 
-**Scrub.** A double press of the centre button starts scrubbing, as on an iPod classic, and the bar fill turns white
-while it lasts. Each wheel tick moves 5 seconds, times a ramp of one more step per 100 ms of spin
-(up to 40 seconds a tick; the lists' gentler ramp and overshoot filter do not apply), within the
-track. Both times and the bar follow the target at once;
-the track jumps there once, when the scrub ends. Another double press or Return ends it, as do a touch and
-3 seconds without a tick, and each gives the wheel back to the volume; Return then stays on the
-page. Ending without having moved the target does not seek. A single press turns the screen off,
-ending any scrub, as on every other page. The jump is stock's key seek, which can pause the player briefly, but only once, when the
-scrub ends, instead of after each pause between ticks. Values are `SCRUB_*` in
-`patch/offsets.inc`; see [internals.md](internals.md#scrub-ipod).
+**Centre button.** A short press cycles the stock play modes in their displayed order: Order,
+Repeat One, Shuffle and Repeat All. A double press within `DOUBLE_CLICK_MS` (200 ms) cancels the
+pending mode change and turns the screen off. The wheel continues to control volume. Seeking stays
+available by tapping or dragging the progress bar.
 
 The top row's text and icons, the bar's ends and the times keep clear of the corners
 ([Rounded corners](#rounded-corners)).
 
 **Lyrics.** Stock already highlights the current line and scrolls to keep it in view. On the
 lyrics page, while the track has lyrics, the wheel scrolls them a line (25 pixels, `LYRIC_STEP`)
-per tick instead of changing the volume or scrubbing; a scrub under way ends first, as any other end
-does. Both times, the bar and the highlight wait meanwhile, and 3 seconds (`SCRUB_MS`) after the
+per tick instead of changing the volume. Both times, the bar and the highlight wait meanwhile, and
+3 seconds (`SCRUB_MS`) after the
 last tick, or at a touch, the page follows the current line again; see
-[internals.md](internals.md#scrub-ipod).
+[internals.md](internals.md#now-playing-controls-ipod).
 
 ### Visualizer
 

@@ -573,6 +573,15 @@ GATES=[('g_backlight_status',0),('g_lockscreen_pageflag',1),('g_testmode_flag',1
        ('g_guideflag',1),('g_poweroff_state',2),('g_usblink_status',2),('bt__recv_pageflag',1)]
 for flag,value in GATES:
     m=Machine(); m.page(); m.byte(syms[flag],value); assert m.call()==0 and not m.moved(); passed()
+# On the active lock screen, two centre releases close the page through its stock Back path. The
+# saved key-lock setting is untouched, and another key cancels a pending first tap.
+m=Machine(); m.page('poweroff_page'); m.byte(syms['g_lockscreen_pageflag'],1)
+assert m.call(O['KEY_CENTER'],gap=0)==11 and not [c for c in m.calls if c[0]=='navigator_back']
+assert m.call(O['KEY_CENTER'],gap=100)==11 and [c[0] for c in m.calls].count('navigator_back')==1
+assert m.u.mem_read(syms['g_lockscreen_pageflag'],1)==b'\x01'; passed()
+m=Machine(); m.page('poweroff_page'); m.byte(syms['g_lockscreen_pageflag'],1)
+m.call(O['KEY_CENTER'],gap=0); m.call(O['KEY_PLAY'],gap=50); m.call(O['KEY_CENTER'],gap=50)
+assert not [c for c in m.calls if c[0]=='navigator_back']; passed()
 for field in ['animating','pressed']:
     m=Machine(); m.page(); setattr(m,field,1); assert m.call()==11 and not m.moved(); passed()
 
@@ -1012,8 +1021,8 @@ if variant == 'ipod':
     assert m.call(170, gap=0) == 11
 passed()
 # Other long-key paths remain byte-for-byte stock; exercise the inert keys and power gate.
-# Home is not a local list, so a Play/Pause hold there stays stock too (queue menu below).
-for key in (171, 172, 173, 222, 223, 218):
+# Play/Pause is covered below with a real input-device record.
+for key in (172, 173, 222, 223, 218):
     m = long_machine(); m.page('home_page')
     if key == 218: m.byte(syms['g_poweroff_state'], 2)
     m.call(key, address=syms['on_wm_keylong_fun'], event_type=0x111)
@@ -2438,7 +2447,7 @@ for patched in (True, False):
     else: assert names==['query_run','songs_view'] and tab==0, names
     passed()
 
-# Play/Pause hold queue menu. libcstl deques are Python lists of element addresses; the stock
+# Centre hold queue menu. libcstl deques are Python lists of element addresses; the stock
 # mclLoadPlayList, mclNextSong and key filters run for real.
 from build import SHUFFLE_CALL, fileoff
 class QueueMachine(Machine):
@@ -2447,7 +2456,7 @@ class QueueMachine(Machine):
         self.deqs={}; self.toasts=[]; self.sent=[]; self.picks=[]; self.airplay=0
         for n in ('_create_deque','deque_init','deque_init_copy','deque_size','deque_at','_deque_push_back',
                   'deque_assign','deque_clear','deque_destroy','deque_pop_back','send@GLIBC_2.0','window_manager_get_input_device_status',
-                  'navigator_to','navigator_to_with_context','window_close','widget_on','widget_destroy_children',
+                  'navigator_to','navigator_to_with_context','navigator_switch_to_with_context','window_close','widget_on','widget_destroy_children',
                   'getMusicByAlbum','getMusicByAlbumAndSonger','getMusicByAlbumAndAlbumSonger','toolsLoadDirectory',
                   'getMusicBySonger','getMusicByAlbumArtist','getMusicByComposer','getMusicByGenre',
                   'getMusicByAlbumAndComposer','getMusicByAlbumAndGenre','checkFavExist','navigator_window_is_exist',
@@ -2511,6 +2520,8 @@ class QueueMachine(Machine):
             elif page=='playing_page': self.opened.append((page,self.names(self.get(b)),self.get(b+4),self.get(b+8),self.get(b+12)))
             elif page=='localmusic/playlist_page': self.opened.append((page,b))
             else: self.opened.append((page,self.get(b),self.get(b+4))); self.top=self.node('window',page); self.stack.append(self.top)
+        elif name=='navigator_switch_to_with_context':
+            self.opened.append((self.text(a),*[self.get(b+4*i) for i in range(4)]))
         elif name=='checkFavExist': ret=self.text(self.get(a+O['REC_NAME'])) in self.favs
         elif name=='navigator_window_is_exist': ret=self.text(a) in self.open_pages
         elif name=='window_close': self.stack.remove(a); self.top=self.stack[-1]
@@ -2525,15 +2536,15 @@ class QueueMachine(Machine):
             self.deqs[self.get(syms['tools_pdeq_directory'])][1]=[self.copy('stSongInfo',e) for e in self.found]; ret=3
         for r in [UC_MIPS_REG_V1,*REGS,UC_MIPS_REG_T8,UC_MIPS_REG_T9]: u.reg_write(r,0xdeadbeef)
         u.reg_write(UC_MIPS_REG_V0,ret&0xffffffff); u.reg_write(UC_MIPS_REG_PC,u.reg_read(UC_MIPS_REG_RA))
-    def press(self,t):
-        self.word(self.status+O['INPUT_KEYS'],O['KEY_PLAY']); self.word(self.status+O['INPUT_KEYS']+O['INPUT_KEY_TIME'],t)
-    def hold(self):
-        ret=self.call(O['KEY_PLAY'],address=syms['on_wm_keylong_fun'],event_type=O['EVT_KEY_LONG'],gap=0)
+    def press(self,t,key=O['KEY_CENTER']):
+        self.word(self.status+O['INPUT_KEYS'],key); self.word(self.status+O['INPUT_KEYS']+O['INPUT_KEY_TIME'],t)
+    def hold(self,key=O['KEY_CENTER']):
+        ret=self.call(key,address=syms['on_wm_keylong_fun'],event_type=O['EVT_KEY_LONG'],gap=0)
         self.advance(0,clear=False)
         return ret
-    def release(self):
+    def release(self,key=O['KEY_CENTER']):
         """Hook, then the real stock key-up; AWTK clears the key record afterwards."""
-        if self.call(O['KEY_PLAY'],gap=0)==0: self.call(O['KEY_PLAY'],address=syms['on_wm_keyup_fun'],gap=0,clear=False)
+        if self.call(key,gap=0)==0: self.call(key,address=syms['on_wm_keyup_fun'],gap=0,clear=False)
         self.u.mem_write(self.status+O['INPUT_KEYS'],bytes(O['INPUT_KEY_SIZE']))
         return sum(c[0]=='playpause_quick_click' for c in self.calls)
     def handler(self,w,kind): return next((f,ctx) for t,f,ctx in self.nodes[w]['handlers'] if t==kind)
@@ -2550,26 +2561,28 @@ class QueueMachine(Machine):
     def playback(self): return [c for c in self.calls if c[0] in ('mclStartPlayer','mclStop','mclSetPause','mclSetResume','mclSetSeek','playpause_quick_click')]
 
 SONG_MENU=['Play next','Add to queue','Add to Favourites','Add to playlist','Go to album','Go to artist']
-# Short press toggles once; a hold opens one menu titled by its row, its release is swallowed and
-# the next short press toggles again. A repeated long event of the same press opens nothing.
+# A centre hold opens one menu titled by its row. Its release is swallowed, and a repeated long
+# event of the same press opens nothing.
 m=QueueMachine(); page=m.top
-m.press(5000); assert m.release()==1
 m.press(6000); assert m.hold()==11 and m.nodes[m.top]['name']=='sortselect_dialog'
 assert {c[1:] for c in m.calls if c[0]=='widget_off_by_func'}=={(m.top,O['EVT_KEY_UP'],O['SORTSELECT_KEYUP']),(m.back,O['EVT_CLICK'],O['SORTSELECT_CLOSE'])}
 assert m.nodes[m.title]['text']=='Row 0' and m.labels()==SONG_MENU
 assert m.hold()==0 and not any(c[0]=='navigator_to' for c in m.calls) and len(m.stack)==2
 assert m.release()==0
-m.press(6500); assert m.release()==1; passed()
+passed()
+# A Play/Pause hold opens Now Playing without restarting playback, and its release does not toggle.
+m=QueueMachine(); m.press(7000,O['KEY_PLAY'])
+assert m.hold(O['KEY_PLAY'])==11 and m.opened[-1]==('playing_page',0,0,255,2)
+assert m.release(O['KEY_PLAY'])==0 and not m.playback(); passed()
 # Return (the replaced dialog key-up) dismisses without the stock sort flag; other keys pass.
 f,ctx=m.handler(m.top,O['EVT_KEY_UP']); ev=m.alloc(0x40); m.word(ev,O['EVT_KEY_UP']); m.word(ev+O['EVENT_KEY'],O['KEY_NEXT'])
 assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==0 and m.top!=page
 m.word(ev+O['EVENT_KEY'],O['KEY_RETURN']); assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==11
 assert m.top==page and not m.toasts and m.names()==['A','B','C'] and m.u.mem_read(syms['g_sort_changeflag'],1)==b'\0'
 passed()
-# A dropped release (AWTK aborts keys when windows change) leaves a latch that must not eat a later
-# press: the press time differs.
+# A dropped release leaves a latch that must not eat a later press: the press time differs.
 m=QueueMachine(); m.press(1); assert m.hold()==11
-m.u.mem_write(m.status+O['INPUT_KEYS'],bytes(O['INPUT_KEY_SIZE'])); m.press(2); assert m.release()==1; passed()
+m.u.mem_write(m.status+O['INPUT_KEYS'],bytes(O['INPUT_KEY_SIZE'])); m.press(2); assert m.release()==0; passed()
 # The hold cancels a pending centre click. Wheel and centre then act on the menu only and the list
 # keeps its selection. Touch and centre arrive as the same click and run once.
 m=QueueMachine(); m.call(); m.call(); assert m.selected(m.surface)==2
@@ -3265,12 +3278,10 @@ if variant=='ipod':
     assert m.get(m.lcd+O['LCD_FILL_COLOR'])==0x12345678; passed()  # restored
     m.bands.clear(); m.call(address=HOOKS['widget_on_paint_border'][0],args=(win,m.canvas,0,0)); assert not m.bands; passed()
 
-    # Scrub: a double centre press toggles it; the wheel then moves a target of SCRUB_STEP
-    # seconds times the ramp, previewed on the slider and both labels however far apart the ticks,
-    # and committed once through player_seek_time (track seconds) when the scrub ends. Stock's page
-    # timer stops meanwhile.
-    FILL_HI=signed(color_t(ACCENTS[0][2])); FG='style:normal:fg_color'
-    def scrub_page(value=100,mx=225):
+    # Now Playing: one centre press cycles the four play modes after the double-click window. A
+    # second press cancels the mode change and turns the screen off through the stock path.
+    FG='style:normal:fg_color'
+    def np_page(value=100,mx=225):
         m=QueueMachine(queue=3,pos=1); m.handlers[playing+12]='stock_playing'
         m.slider=m.node('slider','slider_play',max=mx,value=value)
         m.elapsed,m.remain=m.node('label','label_playtime'),m.node('label','label_ipod_remain')
@@ -3280,86 +3291,26 @@ if variant=='ipod':
         return m
     def did(m,name): return [c[1] for c in m.calls if c[0]==name]
     def keep(m):
-        m.seeks=getattr(m,'seeks',[])+did(m,'player_seek_time'); m.starts=getattr(m,'starts',[])+did(m,'playing_timer_start')
-    def step(m,*a,**k):  # one input or timer step, keeping every seek and timer restart it makes
+        m.starts=getattr(m,'starts',[])+did(m,'playing_timer_start')
+    def step(m,*a,**k):  # one input or timer step, keeping every timer restart it makes
         r=(m.advance if k.pop('wait',False) else m.call)(*a,**k); keep(m); return r
-    def centre(m,gap=1000):  # a double press
-        assert m.call(O['KEY_CENTER'],gap=gap)==11 and not did(m,'playing_timer_clear')
-        assert m.call(O['KEY_CENTER'],gap=100,clear=False)==11
-        m.advance(DC,clear=False); keep(m); assert not m.screens  # no single press left behind
-    def ended(m,seeks,label=''):  # the scrub is over: fill, stock timer and the wheel's volume are back
-        assert m.seeks==seeks and m.starts==[m.win], (label,m.seeks,m.starts)
-        assert m.nodes[m.slider][FG]==FILL_HI and not m.timers and m.call()==0 and not did(m,'player_seek_time'), label
-    m=scrub_page(); centre(m)
-    assert did(m,'playing_timer_clear')==[m.win] and m.nodes[m.slider][FG]==-1 and not m.screens; passed()
-    # Ticks a second apart, far past the old 150 ms seek, each preview at once and none seeks.
-    assert step(m)==11 and m.nodes[m.slider]['value']==105 and m.nodes[m.elapsed]['text']=='01:45'
-    assert m.nodes[m.remain]['text']=='-02:00'
-    assert step(m,gap=1500)==11 and m.nodes[m.slider]['value']==110 and m.nodes[m.elapsed]['text']=='01:50'
-    assert m.nodes[m.remain]['text']=='-01:55'
-    step(m,O['SCRUB_MS']-100,wait=True); assert m.seeks==[] and m.nodes[m.slider]['value']==110; passed()
-    # A spin ramps the step as in a long list and still only previews.
-    for _ in range(12): assert step(m,gap=20)==11
-    assert m.nodes[m.slider]['value']-110>12*O['SCRUB_STEP'] and m.seeks==[]; passed()
-    # The target stops at both ends while the wheel keeps turning; it reverses at once.
-    for key,end in ((O['KEY_NEXT'],225),(O['KEY_PREV'],0)):
-        for _ in range(40): step(m,key,gap=20)
-        assert m.nodes[m.slider]['value']==end and m.seeks==[]
-    assert step(m,gap=300)==11 and m.nodes[m.slider]['value']==5 and m.seeks==[]; passed()
-    # Centre commits the target once; nothing seeks afterwards.
-    centre(m,50); step(m,O['SCRUB_MS'],wait=True); ended(m,[5]); passed()
-    # SCRUB_MS without input commits once and gives the wheel back to the volume, not a tick sooner.
-    m=scrub_page(); centre(m); step(m)
-    step(m,O['SCRUB_MS']-1,wait=True); assert m.seeks==[] and not m.starts
-    step(m,1,wait=True); ended(m,[105]); assert m.nodes[m.slider]['value']==105; passed()
-    # Reversal: the target is where the wheel left it, committed once.
-    m=scrub_page(); centre(m); step(m); step(m); step(m,O['KEY_PREV'])
-    assert m.nodes[m.slider]['value']==105; centre(m,50); ended(m,[105]); passed()
-    # No movement, including turning against an end, seeks nothing on any exit.
-    for end in ('centre','timeout','bound'):
-        m=scrub_page(value=225 if end=='bound' else 100); centre(m)
-        if end=='bound': assert step(m)==11 and m.nodes[m.slider]['value']==225
-        if end=='timeout': step(m,O['SCRUB_MS'],wait=True)
-        else: centre(m,50)
-        ended(m,[],end); passed()
-    # Another double press, Return (swallowed) and touch each end it, committing the target once.
-    for end in ('centre','return','touch'):
-        m=scrub_page(); centre(m); step(m)
-        if end=='centre': centre(m,50)
-        elif end=='return': assert step(m,O['KEY_RETURN'],gap=50)==11
-        else: step(m,address=HOOKS['on_wm_tsdown_before_fun'][0],event_type=O['EVT_POINTER_DOWN'],gap=50)
-        step(m,O['SCRUB_MS'],wait=True); ended(m,[105],end); passed()
-    # A single press turns the screen off DOUBLE_CLICK_MS later, not a millisecond sooner, and
-    # leaves no toggle behind; scrubbing, it commits once first.
-    for scrubbing in (False,True):
-        m=scrub_page()
-        if scrubbing: centre(m); step(m); m.calls=[]
-        assert Machine.release(m)==11; m.advance(DC-1,clear=False); assert not m.screens
-        m.advance(1,clear=False); assert m.screens==[0] and not m.u.mem_read(syms['g_backlight_status'],1)[0]
-        keep(m); m.byte(syms['g_backlight_status'],1); step(m,1000+O['SCRUB_MS'],wait=True)
-        assert m.seeks==([105] if scrubbing else []) and not did(m,'playing_timer_clear')
-        assert not m.timers and m.call()==0; passed()
-    # Another window on top ends it with the one commit; the page's destruction drops the target and
-    # keeps the timer off.
-    m=scrub_page(); centre(m); step(m)
-    m.top=m.node('window','home_page'); step(m); assert m.seeks==[105] and m.starts==[m.win]
-    step(m,O['SCRUB_MS'],wait=True); assert m.seeks==[105] and m.starts==[m.win] and not m.timers; passed()
-    m=scrub_page(); centre(m); step(m)
-    f,ctx=m.handler(m.win,O['EVT_DESTROY']); step(m,address=f,args=(ctx,m.event,0,0),gap=0)
-    assert m.seeks==[] and not m.starts and not m.timers; passed()
-    # A track change since the scrub began drops the target: the next tick (without moving it), the
-    # timeout or an exit each end the scrub without seeking.
-    for end in ('tick','timeout','return'):
-        m=scrub_page(); centre(m); step(m); m.word(O['MCL_POS'],2)
-        if end=='tick': assert step(m)==11 and m.nodes[m.slider]['value']==105
-        elif end=='timeout': step(m,O['SCRUB_MS'],wait=True)
-        else: assert step(m,O['KEY_RETURN'],gap=50)==11
-        ended(m,[],end); passed()
+    for mode in range(4):
+        m=np_page(); m.word(O['MCL_MODE'],mode)
+        assert m.call(O['KEY_CENTER'])==11
+        m.advance(DC-1); assert not [c for c in m.calls if c[0]=='config_playmode']
+        m.advance(1)
+        assert [c[1:3] for c in m.calls if c[0]=='config_playmode']==[(((mode+1)%4),1)]
+        assert not m.screens; passed()
+    m=np_page(); m.word(O['MCL_MODE'],2)
+    assert m.call(O['KEY_CENTER'])==11 and m.call(O['KEY_CENTER'],gap=100,clear=False)==11
+    m.advance(DC)
+    assert not [c for c in m.calls if c[0]=='config_playmode'] and m.screens==[0]
+    assert not m.u.mem_read(syms['g_backlight_status'],1)[0]; passed()
     # The lyrics page (slide value 1) with lyrics: the wheel scrolls scroll_lrc LYRIC_STEP a tick within
-    # its content, ahead of scrub and the volume, with stock's timer (which re-pins the current line)
+    # its content ahead of the volume, with stock's timer (which re-pins the current line)
     # stopped until SCRUB_MS after the last tick. Another page or no lyrics leaves the wheel on volume.
     def lyric_page(page=1,size=9,lines=1):
-        m=scrub_page(); m.lyric_size=size
+        m=np_page(); m.lyric_size=size
         m.lrc=m.node('scroll_view','scroll_lrc',[m.node('label') for _ in range(lines)])
         m.word(m.lrc+O['W_H'],178); m.word(m.lrc+O['VIEW_CONTENT_H'],250)
         m.slide=m.node('slide_view','slide_view',[m.lrc],value=page)
@@ -3375,11 +3326,8 @@ if variant=='ipod':
     for _ in range(5): assert step(m,O['KEY_PREV'],gap=200)==11
     assert m.get(m.lrc+O['SCROLL_Y'])==0 and not m.starts
     step(m,O['SCRUB_MS']-1,wait=True); assert not m.starts
-    step(m,1,wait=True); assert m.starts==[m.win] and not m.timers and m.seeks==[]; passed()
-    # A scrub begun on the lyrics page ends at the next tick, committing once, and the tick scrolls.
-    m=lyric_page(); centre(m); m.nodes[m.slide]['value']=0; step(m); m.nodes[m.slide]['value']=1
-    assert step(m)==11 and m.seeks==[105] and m.get(m.lrc+O['SCROLL_Y'])==O['LYRIC_STEP']
-    step(m,O['SCRUB_MS'],wait=True); assert m.starts==[m.win,m.win] and not m.timers; passed()
+    step(m,1,wait=True)
+    assert m.starts==[m.win] and not m.timers and not did(m,'player_seek_time'); passed()
     # Touch ends it at once; the page's destruction keeps stock's timer off.
     m=lyric_page(); step(m); step(m,address=HOOKS['on_wm_tsdown_before_fun'][0],event_type=O['EVT_POINTER_DOWN'],gap=50)
     assert m.starts==[m.win] and not m.timers; passed()
@@ -3397,6 +3345,9 @@ assert 'Album 0' in m.texts(); passed()
 m.press(3); assert m.hold()==11 and m.nodes[m.title]['text']=='Album 0'
 f,ctx=m.handler(m.back,O['EVT_CLICK']); m.call(O['KEY_RETURN'],address=f,args=(ctx,m.event,0,0),gap=0)
 assert m.top==page and m.release()==0; passed()
+m.press(3,O['KEY_PLAY']); assert m.hold(O['KEY_PLAY'])==11
+assert m.opened[-1]==('playing_page',0,0,255,2) and m.top==page
+assert m.release(O['KEY_PLAY'])==0 and not m.playback(); passed()
 # Covers step like Home: fast ticks retarget one animator, never stock next/previous, whose
 # scroll_to orphans the running animator.
 assert m.call(gap=0)==11; a,_,to,dur=slide(m,m.slide); assert to<0 and dur==200
@@ -3482,7 +3433,7 @@ m=CoverflowMachine(); m.word(m.albums[0]+O['REC_ARTIST'],0); m.open(); m.press(1
 assert m.labels()==['Play next','Add to queue','Shuffle']; passed()
 # Closing the source before the deferred open never creates a dialog.
 m=CoverflowMachine(); m.open(); m.press(100)
-assert m.call(O['KEY_PLAY'],address=syms['on_wm_keylong_fun'],event_type=O['EVT_KEY_LONG'],gap=0)==11
+assert m.call(O['KEY_CENTER'],address=syms['on_wm_keylong_fun'],event_type=O['EVT_KEY_LONG'],gap=0)==11
 m.close(); m.advance(0); assert not any(p[0]=='dialog/sortselect_dialog' for p in m.opened); passed()
 
 # Coverflow's own song deque feeds the shared queue menu, independently of stock browsing state.
@@ -4188,20 +4139,18 @@ if variant=='ipod':
     assert m.confirm()==11 and m.dispatched()[0][1]==buttons[-1]; passed()
     m.click(buttons[2]); assert m.selected(view)==2; passed()
 
-    # The payload's own accent drawing follows the preset, live: the bar, Now Playing's fill and
-    # the fill a scrub restores.
+    # The payload's own accent drawing follows the preset, live, including Now Playing's fill.
     m,view,rows=display({'ACCENT':'2'}); m.paint(view)
     assert [m.bands[i][4] for i in (0,47,48)]==[color_t(ACCENTS[2][i]) for i in (0,1,4)]; passed()
     f,ctx=m.handler(m.nodes[rows[0]]['children'][0],O['EVT_CLICK']); m.call(address=f,args=(ctx,m.event,0,0),gap=0)
     m.paint(view); assert [m.bands[i][4] for i in (0,47,48)]==[color_t(ACCENTS[3][i]) for i in (0,1,4)]; passed()
-    CONFIG.clear(); m=scrub_page()
+    CONFIG.clear(); m=np_page()
     assert m.nodes[m.slider][FG]==signed(color_t(ACCENTS[0][2])); passed()
     CONFIG.update(ACCENT='3'); m=QueueMachine(queue=3,pos=1); m.handlers[playing+12]='stock_playing'
     m.slider=m.node('slider','slider_play',max=225,value=100)
     m.win=m.top=m.node('window','playing_page',[m.slider,m.node('label','label_playtime')]); m.word(m.win+O['W_PARENT'],m.wm)
     m.call(address=playing,args=(m.win,7,0,0),gap=0)
-    assert m.nodes[m.slider][FG]==signed(color_t(ACCENTS[3][2])); centre(m)
-    assert m.nodes[m.slider][FG]==-1; centre(m,50); assert m.nodes[m.slider][FG]==signed(color_t(ACCENTS[3][2])); passed()
+    assert m.nodes[m.slider][FG]==signed(color_t(ACCENTS[3][2])); passed()
 
     # Home: Full widens the list and its rows' tap targets to the screen and hides the art at init
     # and when the setting changes; Split restores the asset's width.
@@ -4402,7 +4351,7 @@ if variant=='ipod':
     assert press(m)==0; m.byte(TONE,1); assert lift(m)==1 and m.selected(view)==2      # and back on
     m.byte(TONE,0x5a); assert tick(m)==1 and m.u.mem_read(TONE,1)==b'\x5a'; passed()
     # The paths outside row navigation sound exactly as the stock binary does, press for press,
-    # and do what they did: the volume, a scrub, the carousels, the pixel-scroll fallback, the
+    # and do what they did: the volume, the carousels, the pixel-scroll fallback, the
     # buttons, a held key, a double press, and the wheel with the screen off or locked.
     def stock(keys,**flags):
         s=audible(Machine(patched=False))
@@ -4413,8 +4362,10 @@ if variant=='ipod':
         return out
     m=audible(Machine()); m.page('playing_page')
     assert [tick(m,key) for key in (NEXT,PREV,NEXT)]==stock((NEXT,PREV,NEXT))==[1,1,1] and m.ret==0; passed()
-    m=audible(scrub_page()); centre(m); debounced(m)  # the double press's stock wheel lockout runs out
-    assert [tick(m,gap=100) for _ in range(3)]==stock((NEXT,)*3)==[1,1,1] and m.nodes[m.slider]['value']==130; passed()
+    m=audible(np_page())
+    assert m.call(CENTER)==11 and m.call(CENTER,gap=100,clear=False)==11
+    debounced(m)  # let the double press's stock wheel lockout run out
+    assert [tick(m,gap=100) for _ in range(3)]==stock((NEXT,)*3)==[1,1,1] and m.nodes[m.slider]['value']==100; passed()
     m=audible(CoverflowMachine()); m.open()
     assert [tick(m,gap=20) for _ in range(2)]==[1,1] and slide(m,m.slide)[3]==120; passed()
     m=audible(Machine()); m.page('sysset_page','slide_menu')
@@ -4569,7 +4520,7 @@ assert m.get(detail+O['W_Y'])+m.get(detail+O['W_H'])<=64
 r=m.nodes[m.find('scroll_view')]['children'][2]; g,c=m.handler(r,O['EVT_CLICK'])
 assert m.call(address=g,args=(c,m.event,0,0),gap=0)==0
 assert m.queued==ranked and m.plays==[('playing_page',m.plays[0][1],2,1,2)] and not called('config_playmode'); passed()
-# A Play/Pause hold on a row opens the song menu, as Coverflow's tracks do, over the ranked list.
+# A Centre hold on a row opens the song menu, as Coverflow's tracks do, over the ranked list.
 m.handlers[syms['navigator_to']]='q:navigator_to'; view=m.find('scroll_view'); m.paint(view); m.call()
 m.press(100); assert m.hold()==11 and m.nodes[m.title]['text']=='T7' and m.release()==0
 assert m.labels()==['Play next','Add to queue','Add to Favourites','Go to artist']; passed()

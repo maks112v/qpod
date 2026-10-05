@@ -194,9 +194,7 @@
 #define LETTER_ALPHA 0xd9
 #define LETTER_PX 60
 #define LETTER_MS 400
-/* iPod Now Playing scrub: SCRUB_STEP seconds per detent times the list ramp, previewed until
- * centre or Return commits it, or SCRUB_MS without input commits it and puts the wheel back on volume. */
-#define SCRUB_STEP 5
+/* Input mode timeout shared by lyrics scrolling and the video player's seek wheel. */
 #define SCRUB_MS 3000
 #define LYRIC_STEP 25 /* px per wheel tick on the lyrics page: one stock lyric row */
 /* With the screen off the UI loop idles this long a turn instead of stock's 8 ms; screen-off keys
@@ -260,7 +258,7 @@
 #define SLIDE_EASING 8          /* stock scroll_to easing */
 #define EVT_ANIM_END 0x125
 
-/* Play/Pause hold queue menu (docs/internals.md). AWTK input_device_status lives at
+/* Centre actions and Play/Pause Now Playing holds (docs/internals.md). AWTK input_device_status lives at
  * wm+0x98 (window_manager_get_input_device_status @0x66e734): 16 key records of 0x18 bytes from
  * +0x30, each {key, long fired, u64 press time @8, aborted @0x10}. */
 #define EVT_KEY_LONG 0x111
