@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+download_page="https://en.shanling.com/download/150"
+
+page="$(curl -fsSL "$download_page")"
+version="$(printf '%s' "$page" | rg -o 'Shanling Q2 Firmware V[0-9]+(\.[0-9]+)+' | head -n 1 | sed 's/^Shanling Q2 Firmware //')"
+drive_url="$(printf '%s' "$page" | rg -o 'https://drive\.google\.com/file/d/[^"?]+' | head -n 1)"
+
+if [[ -z "$version" || -z "$drive_url" ]]; then
+  echo "Could not find the current Q2 firmware on $download_page" >&2
+  exit 1
+fi
+
+file_id="${drive_url#*/d/}"
+file_id="${file_id%%/*}"
+destination="$repo_root/firmware/Q2 Firmware $version.zip"
+mkdir -p "$repo_root/firmware"
+download="$(mktemp "$repo_root/firmware/.download.XXXXXX")"
+trap 'rm -f "$download"' EXIT
+
+curl -fL --retry 3 \
+  --output "$download" \
+  "https://drive.usercontent.google.com/download?id=$file_id&export=download&confirm=t"
+
+python3 -m zipfile -t "$download" >/dev/null
+mv "$download" "$destination"
+trap - EXIT
+
+echo
+echo "Downloaded $destination"
+shasum -a 256 "$destination"

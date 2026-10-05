@@ -43,7 +43,7 @@ extern const char *track_name(char *buf, unsigned size, void *t);
  * first: sooner is a spin, later a tick of its own. Tuned on the device. */
 #define OVERSHOOT_MIN_MS 80
 #define OVERSHOOT_MAX_MS 140
-#define WHEEL_RAMP_MS 100 /* scrub, the pixel fallback and Stock: one step for this long, then */
+#define WHEEL_RAMP_MS 100 /* pixel fallback and Stock: one step for this long, then */
 #define WHEEL_MAX_STEP 8  /* one more per this much spin, up to this many */
 #define LIST_FIRST_MS 300 /* iPod row lists: one row per step for this long, */
 #define LIST_RAMP_MS 200  /* then one row more per this much spin */
@@ -148,10 +148,8 @@ typedef struct {
     unsigned vol_timer;
     unsigned np_hash; /* of the album text, position and queue length shown, 0 to refresh */
     int np_left;
-    /* Scrub: a centre press at np_press_at waits DOUBLE_CLICK_MS in np_press for a second one;
-     * scrub_to is the target second, scrub_moved set once the wheel changed it. */
-    unsigned np_press, np_press_at, scrub_timer, scrub_track;
-    int scrub, scrub_to, scrub_moved;
+    /* A centre press waits in np_press for a second one: one cycles the play mode, two sleep. */
+    unsigned np_press, np_press_at;
     unsigned lyric_timer; /* runs while the wheel holds the lyrics and stock's timer is stopped */
     /* The Display settings, read from config.ini on first use, and the display page's value labels.
      */
@@ -160,10 +158,12 @@ typedef struct {
     unsigned tone_key; /* the wheel key whose press ringnav_keydown silenced, 0 when none */
     int greeted;       /* the first reachable list got its boot repaint */
 #endif
-    /* Queue menu: the hold's AWTK press time marks its release; the target is a track/list row
+    /* Held centre/Play: the AWTK press time marks its release; the target is a track/list row
      * checked by count, record and browsing-state hashes; qm_cls is the class its list holds;
      * qm_forced is a shuffle Play next. */
-    unsigned long long qm_press;
+    unsigned long long hold_press;
+    unsigned unlock_at;
+    int unlock_waiting;
     unsigned qm_timer, qm_cls, qm_idx, qm_rows, qm_hash, qm_browse, qm_forced, qm_forced_hash;
     int qm_kind, qm_action;
     void *qm_dialog;
@@ -364,6 +364,7 @@ static void drop_spin(void) {
 static void drop_input(void) {
     cancel_center();
     drop_spin();
+    st.unlock_waiting = 0;
 }
 
 /* Home and Coverflow step their slide_menu with one retargeted animator (home_step): stock
@@ -1670,7 +1671,7 @@ static void clock_text(void *label, int negative, int t) {
 }
 
 /* Now Playing's "3 of 12", album and remaining time (slider max less value, stock's seconds, so a
- * drag or scrub previews it). Labels are written only when their source changes. */
+ * drag previews it). Labels are written only when their source changes. */
 static void np_sync(void *top) {
     if (!top || top != st.np_win) return;
     unsigned at, n;
@@ -1694,48 +1695,16 @@ static void np_sync(void *top) {
     clock_text(st.np_remain, 1, left);
 }
 
-/* Scrub (docs/internals.md#scrub-ipod) follows stock's own key seek (0x52c754): the page's 250 ms
- * timer stops, the slider and label_playtime preview the target, player_seek_time commits it once
- * on exit in track seconds (it adds a CUE track's start), and the timer restarts. */
-/* The playing track: its queue position and path. */
-static unsigned np_track(void) {
-    unsigned at, n;
-    void *r = queue_now(&at, &n);
-    return r ? fnv(hash_bytes(FNV_SEED, (const unsigned char *)&at, sizeof at), P(r, REC_PATH)) : 0;
-}
-
-/* The accent's light tone fills the progress bar; a white fill marks the scrub. */
-static void np_fill(int scrub) {
+/* The accent's light tone fills the progress bar. */
+static void np_fill(void) {
     if (!st.np_slider) return;
-    unsigned color = scrub ? 0xffffffff : RGBA(accents[accent()][TONE_LIGHT]);
+    unsigned color = RGBA(accents[accent()][TONE_LIGHT]);
     widget_set_prop_int(st.np_slider, "style:normal:fg_color", (int)color);
     widget_invalidate_force(st.np_slider, (void *)0);
 }
 
-/* Commits a target the wheel moved, unless the playing track changed since the scrub began; the
- * page's timer and fill come back unless the page is gone. */
-static void scrub_end(void) {
-    if (!st.scrub) return;
-    st.scrub = 0;
-    stop_timer(&st.scrub_timer);
-    if (st.scrub_moved && np_track() == st.scrub_track)
-        player_seek_time(st.scrub_to); /* blocks the UI up to 2 s, as stock's key seek */
-    st.scrub_moved = 0;
-    if (!st.np_win) return;
-    np_fill(0);
-    playing_timer_start(st.np_win);
-}
-
-static int scrub_expire(const void *info) {
-    (void)info;
-    st.scrub_timer = 0;
-    scrub_end();
-    return 0;
-}
-
 /* The lyrics: stock's 250 ms timer scrolls scroll_lrc back to the current line on every tick, so
- * it stops while the wheel scrolls them and restarts SCRUB_MS after the last tick, as for a scrub.
- */
+ * it stops while the wheel scrolls them and restarts SCRUB_MS after the last tick. */
 static void lyric_end(void) {
     if (!st.lyric_timer) return;
     stop_timer(&st.lyric_timer);
@@ -1750,13 +1719,12 @@ static int lyric_expire(const void *info) {
 }
 
 /* The wheel on the lyrics page (the slide_view's second), while the track has lyrics, scrolls
- * them LYRIC_STEP a tick, ahead of scrub (which ends) and the volume. */
+ * them LYRIC_STEP a tick ahead of the volume. */
 static int np_lyrics(unsigned key) {
     void *lrc = st.np_lrc;
     if (!st.np_slide || !lrc || widget_get_prop_int(st.np_slide, "value", 0) != 1 ||
         !widget_count_children(lrc) || mclGetLyricSize() <= 0)
         return 0;
-    scrub_end();
     if (!st.lyric_timer) playing_timer_clear(st.np_win);
     rearm(&st.lyric_timer, lyric_expire, SCRUB_MS);
     int y = clamp_step(I(lrc, SCROLL_Y), I(lrc, VIEW_CONTENT_H) - I(lrc, W_H),
@@ -1767,67 +1735,35 @@ static int np_lyrics(unsigned key) {
 
 static void np_cancel(void) {
     stop_timer(&st.np_press);
-    scrub_end();
     lyric_end();
 }
 
-/* A single centre press, DOUBLE_CLICK_MS on: it ends any scrub, then replays the release to stock
- * on_wm_keyup_fun, which turns the screen off (it reads only the event's key). */
+/* A single centre press advances the stock play mode and its Now Playing icon. */
 static int np_single(const void *info) {
     (void)info;
-    static const unsigned release[EVENT_KEY / 4 + 1] = { [EVENT_KEY / 4] = KEY_CENTER };
     st.np_press = 0;
-    scrub_end();
-    if (g_backlight_status) on_wm_keyup_fun((void *)0, (void *)release);
+    int mode = *(volatile int *)MCL_MODE;
+    config_playmode(mode >= 0 && mode < 3 ? mode + 1 : 0, 1);
     return 0;
 }
 
-/* Centre and, while scrubbing, the wheel on the top Now Playing page. A centre press waits
- * DOUBLE_CLICK_MS: a second one toggles scrub, else it turns the screen off as anywhere else. The
- * wheel moves the target SCRUB_STEP seconds times the WHEEL_RAMP_MS ramp, within the track, and
- * only previews it: the seek waits for the scrub to end. Neither the volume nor its dialog sees
- * the wheel. */
-static int np_key(void *top, unsigned key) {
+/* One centre press cycles Order, Repeat One, Shuffle and Repeat All. A second press within
+ * DOUBLE_CLICK_MS cancels that change and takes the stock screen-off path. */
+static int np_key(unsigned key) {
     unsigned now = (unsigned)time_now_ms();
-    if (key == KEY_CENTER) {
-        if (st.np_press) {
-            stop_timer(&st.np_press);
-            if (now - st.np_press_at < DOUBLE_CLICK_MS) { /* a double press toggles scrub */
-                if (st.scrub)
-                    scrub_end();
-                else if (st.np_slider) {
-                    lyric_end();
-                    st.scrub = 1;
-                    st.scrub_moved = 0;
-                    st.scrub_to = widget_get_prop_int(st.np_slider, "value", 0);
-                    st.scrub_track = np_track();
-                    playing_timer_clear(st.np_win);
-                    np_fill(1);
-                    rearm(&st.scrub_timer, scrub_expire, SCRUB_MS);
-                }
-                return STOP;
-            }
-            np_single((void *)0); /* overdue: that press was a single one */
-            return 0;             /* and stock takes this one */
+    if (key != KEY_CENTER) return 0;
+    if (st.np_press) {
+        stop_timer(&st.np_press);
+        if (now - st.np_press_at < DOUBLE_CLICK_MS) {
+            static const unsigned release[EVENT_KEY / 4 + 1] = { [EVENT_KEY / 4] = KEY_CENTER };
+            lyric_end();
+            if (g_backlight_status) on_wm_keyup_fun((void *)0, (void *)release);
+            return STOP;
         }
-        st.np_press_at = now;
-        st.np_press = timer_add(np_single, (void *)0, DOUBLE_CLICK_MS);
-        return STOP;
+        np_single((void *)0); /* overdue: apply the first press before starting another */
     }
-    if (np_track() != st.scrub_track) { /* a new track: scrub_end drops the last one's target */
-        scrub_end();
-        return STOP;
-    }
-    int dir = key == KEY_NEXT ? 1 : -1;
-    /* the step grows while the wheel spins: every tick counts, on the ramp lists had before */
-    int step = SCRUB_STEP * ramp(top, st.np_slider, 0, -1, dir, now, WHEEL_RAMP_MS, WHEEL_RAMP_MS);
-    int to = clamp_step(st.scrub_to, widget_get_prop_int(st.np_slider, "max", 0), dir * step);
-    if (to != st.scrub_to) st.scrub_moved = 1;
-    st.scrub_to = to;
-    widget_set_prop_int(st.np_slider, "value", to);
-    clock_text(st.np_elapsed, 0, to);
-    np_sync(top);
-    rearm(&st.scrub_timer, scrub_expire, SCRUB_MS);
+    st.np_press_at = now;
+    st.np_press = timer_add(np_single, (void *)0, DOUBLE_CLICK_MS);
     return STOP;
 }
 
@@ -1837,7 +1773,6 @@ static int np_gone(void *win, void *event) {
         st.np_win = (void *)0;
         st.np_hash = 0;
         st.np_slider = st.np_elapsed = st.np_cover = st.np_slide = st.np_lrc = (void *)0;
-        st.scrub_moved = 0; /* the page is going: no seek */
         np_cancel();
     }
     return 0;
@@ -1859,7 +1794,7 @@ int ringnav_playing(void *win, void *ctx) {
     st.np_lrc = widget_lookup(win, "scroll_lrc", 1);
     st.np_hash = 0;
     st.np_left = -1;
-    np_fill(0);
+    np_fill();
     widget_on(win, EVT_DESTROY, np_gone, win);
     np_sync(win);
     visualizer_attach(win);
@@ -2101,7 +2036,7 @@ static int setting_click(void *ctx, void *event) {
     else if (i == 1)
         coverflow_home_layout();
     else if (!i) {
-        np_fill(0);
+        np_fill();
         image_manager_unload_all(image_manager());
         widget_invalidate_force(window_manager(), (void *)0);
     }
@@ -2384,26 +2319,40 @@ void ringnav_boot(const char *page, const int *ctx) {
 }
 #endif
 
-/* Play/Pause hold queue menu (docs/internals.md). Stock long press fires once per press, so a hold
+/* Play/Pause hold opens Now Playing without making the same gesture a Home toggle. */
+static void open_now_playing(void) {
+    pull_cancel();
+    drop_input();
+    void *wm = window_manager();
+    void *top = window_manager_get_top_window(wm);
+    fx_cancel();
+    if (usable() && top && !window_manager_is_animating(wm) &&
+        tk_strcmp(widget_get_prop_str(top, "name", ""), "playing_page")) {
+        static const int context[4] = { 0, 0, 0xff, 2 };
+        navigator_switch_to_with_context("playing_page", context, 0);
+    }
+}
+
+/* Centre hold queue menu (docs/internals.md). Stock long press fires once per press, so a hold
  * on a local song, album, artist/composer/genre or folder row opens the stock sortselect dialog
  * rebuilt as that row's menu. */
 enum { QM_SONG = 1, QM_ALBUM, QM_GROUP, QM_FOLDER, QM_COVERFLOW, QM_COVERALBUM };
 enum { QA_NEXT = 1, QA_ADD, QA_SHUFFLE, QA_FAV, QA_UNFAV, QA_PLAYLIST, QA_ALBUM, QA_ARTIST };
 #define MCL(a) (*(volatile int *)(a))
 
-static char *play_key(void) {
+static char *input_key(unsigned key) {
     char *s = window_manager_get_input_device_status(window_manager());
     for (int i = 0; s && i < INPUT_KEY_COUNT; ++i)
-        if (I(s, INPUT_KEYS + i * INPUT_KEY_SIZE) == KEY_PLAY)
+        if ((unsigned)I(s, INPUT_KEYS + i * INPUT_KEY_SIZE) == key)
             return s + INPUT_KEYS + i * INPUT_KEY_SIZE;
     return (char *)0;
 }
 
-/* Any Play/Pause release ends the latch; only the held press itself is swallowed. */
-static int hold_released(void) {
-    char *k = play_key();
-    int held = k && st.qm_press && *(unsigned long long *)(k + INPUT_KEY_TIME) == st.qm_press;
-    st.qm_press = 0;
+/* Any release of the held key ends the latch; only that held press is swallowed. */
+static int hold_released(unsigned key) {
+    char *k = input_key(key);
+    int held = k && st.hold_press && *(unsigned long long *)(k + INPUT_KEY_TIME) == st.hold_press;
+    st.hold_press = 0;
     return held;
 }
 
@@ -3075,7 +3024,7 @@ static int qm_open(const void *unused) {
     return 0;
 }
 
-/* The hold: the same gates and row as a centre press, over the stock showlist or Coverflow's
+/* Centre hold: the same gates and row as a short press, over the stock showlist or Coverflow's
  * own tracks (row count checked). Everything else stays stock. */
 static int qm_hold(void) {
     void *wm = window_manager(), *top = window_manager_get_top_window(wm);
@@ -3086,13 +3035,13 @@ static int qm_hold(void) {
     const char *name = widget_get_prop_str(top, "name", "");
     int kind = contexts[context_id(name)].kind;
     void *album = coverflow_album(top);
-    char *key = play_key();
+    char *key = input_key(KEY_CENTER);
     if (album) {
         if (!key || !(st.qm_timer = timer_add(qm_open, (void *)0, 0))) return 0;
         st.qm_kind = QM_COVERALBUM;
         st.qm_cls = CLASS_ALBUMS;
         st.qm_hash = rec_hash(album);
-        st.qm_press = *(unsigned long long *)((char *)key + INPUT_KEY_TIME);
+        st.hold_press = *(unsigned long long *)((char *)key + INPUT_KEY_TIME);
         drop_input();
         return 1;
     }
@@ -3126,14 +3075,24 @@ static int qm_hold(void) {
     st.qm_rows = (unsigned)g_menu.rows;
     st.qm_hash = rec_hash(r);
     st.qm_browse = browse_hash();
-    st.qm_press = *(unsigned long long *)((char *)key + INPUT_KEY_TIME);
+    st.hold_press = *(unsigned long long *)((char *)key + INPUT_KEY_TIME);
     drop_input();
     return 1;
 }
 
-/* Stock long-key callback: everything except a taken Play/Pause hold runs the stock body. */
+/* Stock long-key callback: centre opens a row's actions; Play/Pause opens Now Playing. */
 int ringnav_keylong(void *ctx, void *event) {
-    if (event && I(event, EVENT_KEY) == KEY_PLAY && qm_hold()) return STOP;
+    unsigned key = event ? (unsigned)I(event, EVENT_KEY) : 0;
+    if (key == KEY_CENTER && qm_hold()) return STOP;
+    if (key == KEY_PLAY && usable() && !window_manager_is_animating(window_manager()) &&
+        !window_manager_get_pointer_pressed(window_manager())) {
+        char *record = input_key(KEY_PLAY);
+        if (record) {
+            st.hold_press = *(unsigned long long *)(record + INPUT_KEY_TIME);
+            open_now_playing();
+            return STOP;
+        }
+    }
     return stock_keylong_trampoline(ctx, event);
 }
 
@@ -3284,7 +3243,7 @@ static void resume_poll(void) {
     if (st.rs_pending) {
         if (sec < 1) return; /* not playing yet: a paused boot resume waits for Play */
         if (sec < RESUME_START_S) {
-            player_seek_time(st.rs_pending); /* blocks the UI up to 2 s, as Scrub's commit */
+            player_seek_time(st.rs_pending); /* the stock seek can block the UI for up to 2 s */
             sec = st.rs_pending;
         }
         st.rs_pending = 0;
@@ -3438,7 +3397,7 @@ int ringnav_buzzer(int on) {
  * navigation runs the whole stock body with the flag off for that one synchronous call, so its
  * gates and latches still run, and the release clicks when the selection changes. The test reads
  * the tree only: nothing is loaded, selected or restored. Carousels, the pixel-scroll fallback,
- * scrub, the volume and every other key keep the stock click. */
+ * lyrics, the volume and every other key keep the stock click. */
 int ringnav_keydown(void *ctx, void *event) {
     unsigned key = event ? (unsigned)I(event, EVENT_KEY) : 0;
     unsigned char tone = g_keytone_flag;
@@ -3466,6 +3425,7 @@ int ringnav(void *ctx, void *event) {
         return 0;
     }
     unsigned key = (unsigned)I(event, EVENT_KEY);
+    int locked_center = key == KEY_CENTER && g_lockscreen_pageflag;
 #if IPOD
     /* This release's press was silenced by ringnav_keydown: a row change below clicks instead. */
     int owned = st.tone_key == key;
@@ -3473,7 +3433,21 @@ int ringnav(void *ctx, void *event) {
 #endif
     if (key != KEY_PREV && key != KEY_NEXT) st.wheel_tick = 0; /* a button ends the run */
     int result = stock_keyup_trampoline(ctx, event);
-    if (key == KEY_PLAY && hold_released()) return STOP;
+    if ((key == KEY_PLAY || key == KEY_CENTER) && hold_released(key)) return STOP;
+    if (locked_center) {
+        unsigned now = (unsigned)time_now_ms();
+        if (st.unlock_waiting && now - st.unlock_at < DOUBLE_CLICK_MS) {
+            st.unlock_waiting = 0;
+            navigator_back(); /* the page's close callback clears g_lockscreen_pageflag */
+        } else {
+            st.unlock_at = now;
+            st.unlock_waiting = 1;
+        }
+        cancel_center();
+        drop_spin();
+        return STOP;
+    }
+    if (key != KEY_CENTER) st.unlock_waiting = 0;
     if (result) {
         cancel_center();
         if (key == KEY_PREV || key == KEY_NEXT) drop_wheel();
@@ -3482,10 +3456,6 @@ int ringnav(void *ctx, void *event) {
         return result;
     }
 #if IPOD
-    if (key == KEY_RETURN && st.scrub) { /* ends the scrub without leaving the page */
-        np_cancel();
-        if (window_manager_get_top_window(window_manager()) == st.np_win) return STOP;
-    }
     /* Back by button: the page behind shows its row. A sliding page is painted once more, into its
      * closing snapshot, inside stock's handling of this release; it keeps hiding its own row until
      * that is done. */
@@ -3525,8 +3495,8 @@ int ringnav(void *ctx, void *event) {
         np_cancel();
     else if (key != KEY_CENTER && np_lyrics(key))
         return STOP;
-    else if (key == KEY_CENTER || st.scrub)
-        return np_key(top, key);
+    else if (key == KEY_CENTER)
+        return np_key(key);
 #endif
     if (!allowed_top(top)) {
         drop_input();

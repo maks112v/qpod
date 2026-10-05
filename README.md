@@ -50,7 +50,7 @@
 
 **Music**
 
-- Hold Play/Pause: Favourites, Add to playlist, Shuffle, Go to album/artist
+- Hold Centre: Favourites, Add to playlist, Shuffle, Go to album/artist
 - Shuffle Songs and Most Played (your top 100)
 - Parametric EQ: up to 30 bands, per channel, with balance and a live curve
 - Sorting ignores a leading The, A or An
@@ -138,14 +138,15 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 
 ## Controls
 
-| Control                   | What it does                                                                                                                                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Wheel**                 | One row per tick; spin to speed up. Outside menus it sets volume.                                                                                                   |
-| **Centre button**         | Opens the highlighted item. Double-press turns the screen off (single press on Now Playing).                                                                        |
-| **Hold Play/Pause**       | Song: queue, favourite, playlist, go to album or artist. Album, artist, genre or folder: queue, shuffle, playlist; a Coverflow album: queue, shuffle, go to artist. |
-| **Hold Return** (iPod)    | Opens Now Playing; the next Return goes back.                                                                                                                       |
-| **Scrub** (iPod)          | On Now Playing, double-press centre, then turn: 5 s per tick. Double-press, Return, touch or wait 3 s to jump.                                                      |
-| **Pull to search** (iPod) | At the top of Library (Local Songs), pull down until "Release to search" appears.                                                                                   |
+| Control                   | What it does                                                                                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Wheel**                 | One row per tick; spin to speed up. Outside menus it sets volume.                                                                                                |
+| **Centre button**         | Opens the highlighted item. On Now Playing, press once to cycle play modes or twice to turn the screen off.                                                     |
+| **Double Centre**         | Turns the screen off. On the lock screen, unlocks the player.                                                                                                   |
+| **Hold Centre**           | Song: queue, favourite, playlist, go to album or artist. Album, artist, genre or folder: queue, shuffle, playlist; a Coverflow album: queue, shuffle, go to artist. |
+| **Hold Play/Pause**       | Opens Now Playing without changing playback.                                                                                                                    |
+| **Hold Return** (iPod)    | Opens Now Playing; the next Return goes back.                                                                                                                    |
+| **Pull to search** (iPod) | At the top of Library (Local Songs), pull down until "Release to search" appears.                                                                                |
 
 - **List ends:** lists stop at the end; pause, then turn again to wrap.
 - **Position memory:** recent folders, albums, searches and menus reopen where you were, until power-off.
