@@ -2,7 +2,8 @@
 stock/
 work/
 build/
-dist/*
+dist/
+firmware/
 *.zip
 *.tar
 *.squashfs

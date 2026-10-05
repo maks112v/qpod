@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+firmware_zip="${1:-}"
+
+if [[ -z "$firmware_zip" ]]; then
+  shopt -s nullglob
+  firmware_zips=("$repo_root"/firmware/*.zip)
+  shopt -u nullglob
+
+  if (( ${#firmware_zips[@]} > 0 )); then
+    firmware_zip="${firmware_zips[0]}"
+    for candidate in "${firmware_zips[@]:1}"; do
+      [[ "$candidate" -nt "$firmware_zip" ]] && firmware_zip="$candidate"
+    done
+  fi
+fi
+
+if [[ -z "$firmware_zip" || ! -f "$firmware_zip" ]]; then
+  echo "Stock firmware ZIP not found: $firmware_zip" >&2
+  echo "Run scripts/download-firmware or pass a ZIP path to scripts/build." >&2
+  exit 1
+fi
+
+build_dir="$(mktemp -d "${TMPDIR:-/tmp}/q2-pod-build.XXXXXX")"
+trap 'rm -rf "$build_dir"' EXIT
+
+export PATH="/opt/homebrew/opt/binutils/bin:/opt/homebrew/opt/llvm/bin:$PATH"
+
+python3 "$repo_root/tools/build.py" "$firmware_zip" \
+  --out "$build_dir" \
+  --ipod \
+  --dev
+
+mkdir -p "$repo_root/dist"
+install -m 0644 "$build_dir/update.tar" "$repo_root/dist/update.tar"
+
+echo
+echo "Built $repo_root/dist/update.tar"
+shasum -a 256 "$repo_root/dist/update.tar"
