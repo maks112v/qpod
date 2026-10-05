@@ -28,8 +28,23 @@ python3 test/coverflow.py --captures /tmp/cf  # the same, plus the renderer's fr
 python3 test/build.py  # JPEG header checks; no emulator required
 python3 test/build.py 'Q2 Firmware V1.32.zip'  # optional packaging/reproducibility checks
 python3 test/patch.py /tmp/q2-build  # after: pip install -r requirements.txt
+python3 tools/emulator.py /tmp/q2-ipod  # visual emulator from a build directory
+python3 tools/emulator.py Q2.Firmware.V7.7.zip  # or directly from a packaged iPod release
 python3 tools/port.py 'Q2 Firmware V1.32.zip' --self-check  # every raw stock address has a signature (internals.md#porting)
 ```
+
+The visual emulator runs the built MIPS payload and the stock callbacks used by the test harness.
+Click its window to capture input. Two-finger vertical scrolling on a macOS trackpad sends the same
+key-down-before and key-up-before pair as one Q2 wheel tick, including the real timing used by the
+overshoot filter and acceleration. A click in the left, middle or right third sends the previous,
+centre or next hardware button. Escape releases input; Return captures it again. The arrow keys and
+Space remain available as previous, next and Play/Pause controls while input is captured. Up and
+Down send wheel ticks; Backspace sends the Q2 Return key.
+
+This is an application emulator, not a full Shanling SoC emulator. It executes the real MIPS input,
+navigation, animation and paint hooks, while the existing harness supplies the framebuffer, widget,
+storage, audio and network boundaries. Device validation is still required for kernel drivers, DAC,
+Bluetooth, framebuffer page flipping and physical wheel electrical behavior.
 
 Both variants replace the stock equalizer page with a 30-band PEQ editor (bands, shelves, preamp, on/off, presets, `/EQ` import) and patch `hciplayer`'s equalizer filter with the matching DSP. Both also clear the 44.1 kHz AAC capability bit in `bluealsa` (see [internals.md](internals.md#bluetooth-aac)).
 

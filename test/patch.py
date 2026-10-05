@@ -8,10 +8,13 @@ from unicorn.mips_const import *
 import sys; sys.path.insert(0, sys.path[0] + '/../tools')  # tools/ first: test/build.py must import tools/build.py
 from build import segments, symbols, BASE, SCRATCH, HOOKS, IPOD_HOOKS, WM_PAINT_LEAF, FUNCTIONS, GLOBALS, CONTEXT_DATA, ROOT, source_sha256, sha, PRIVATE_FUNCTIONS, VERSIONS, VERSION
 B=pathlib.Path(sys.argv[1] if len(sys.argv)>1 else 'build')
+EMULATOR='--emulator' in sys.argv
 manifest=json.loads((B/'manifest.json').read_text())
 if manifest.get('source_sha256') != source_sha256():
     raise SystemExit(f'{B}/manifest.json does not match the current patch sources; rebuild into a fresh directory and pass it here')
-for name,key in (('demo','demo_sha256'),('stock-demo','stock_demo_sha256'),('patch.bin','patch_sha256')):
+artifacts=(('demo','demo_sha256'),('patch.bin','patch_sha256')) if EMULATOR else (
+    ('demo','demo_sha256'),('stock-demo','stock_demo_sha256'),('patch.bin','patch_sha256'))
+for name,key in artifacts:
     if sha((B/name).read_bytes()) != manifest.get(key):
         raise SystemExit(f'{B/name} does not match manifest.json; rebuild into a fresh directory')
 variant = manifest.get('variant')
@@ -27,7 +30,7 @@ O_GLYPH=re.search(r'#define BT_GLYPH "(\w+)"',INC)[1]  # the plain Bluetooth gly
 CONFIG={}  # config.ini [IPOD] keys a new Machine starts with; the payload reads them on first use
 FILL,SHADE,OUTLINE=((O[a]<<24)|O[c] for a,c in (('FILL_ALPHA','FILL_RGB'),('SHADE_ALPHA','FILL_RGB'),('OUTLINE_ALPHA','OUTLINE_RGB')))
 LCD_COLORS=(0x9abcdef0,0x12345678)
-syms=symbols(B/'stock-demo')
+syms=symbols(B/('demo' if EMULATOR else 'stock-demo'))
 syms.update(PRIVATE_FUNCTIONS)
 VG_MOCKS=[n for n in syms if n.startswith(('vgcanvas_','vg_gradient_'))]
 
@@ -524,6 +527,11 @@ class Machine:
         return w,rs
     def moved(self): return [x for x in self.calls if x[0] in ('scroll_view_set_offset','table_client_set_yoffset','scroll_view_scroll_delta_to','table_client_scroll_to','slide_menu_scroll_to_next','slide_menu_scroll_to_prev','widget_animator_scroll_set_params')]
     def dispatched(self): return [x for x in self.calls if x[0]=='stock_dispatch']
+
+if EMULATOR:
+    from emulator_ui import run
+    run(Machine, O, IPOD_HOOKS, DC, smoke='--smoke-test' in sys.argv)
+    raise SystemExit
 
 checks=0
 def passed():
