@@ -307,6 +307,7 @@ class Machine:
         elif name=='widget_count_children': ret=len(n['children'])
         elif name=='widget_get_child': ret=n['children'][b] if b<len(n['children']) else 0
         elif name=='widget_set_prop_int': n[self.text(b)]=signed(c); ret=0
+        elif name=='config_playmode': self.word(O['MCL_MODE'],a); ret=0
         elif name=='pointer_event_init':
             self.word(a,b); self.word(a+0x10,c); ret=a
         elif name=='time_now_ms': ret=self.now & 0xffffffff
@@ -3352,14 +3353,19 @@ if variant=='ipod':
     assert m.get(m.lcd+O['LCD_FILL_COLOR'])==0x12345678; passed()  # restored
     m.bands.clear(); m.call(address=HOOKS['widget_on_paint_border'][0],args=(win,m.canvas,0,0)); assert not m.bands; passed()
 
-    # Now Playing: one centre press cycles the four play modes after the double-click window. A
-    # second press cancels the mode change and turns the screen off through the stock path.
+    # Centre cycles progress, wheel seeking and mode selection after the double-click window.
+    # A second press cancels the panel change and turns the screen off through the stock path.
     FG='style:normal:fg_color'
     def np_page(value=100,mx=225):
         m=QueueMachine(queue=3,pos=1); m.handlers[playing+12]='stock_playing'
         m.slider=m.node('slider','slider_play',max=mx,value=value)
         m.elapsed,m.remain=m.node('label','label_playtime'),m.node('label','label_ipod_remain')
-        m.win=m.top=m.node('window','playing_page',[m.slider,m.elapsed,m.remain])
+        m.control=m.node('label','label_ipod_control',visible=0)
+        m.win=m.top=m.node('window','playing_page',[m.slider,m.elapsed,m.remain,m.control])
+        m.nodes[m.wm]={'children':[m.win]}
+        m.word(m.win+O['W_W'],375)
+        for w,g in ((m.slider,(24,240,327,30)),(m.elapsed,(16,265,80,16))):
+            for k,v in zip(('W_X','W_Y','W_W','W_H'),g): m.word(w+O[k],v)
         m.word(m.win+O['W_PARENT'],m.wm)
         assert m.call(address=playing,args=(m.win,7,0,0),gap=0)==0
         return m
@@ -3368,13 +3374,98 @@ if variant=='ipod':
         m.starts=getattr(m,'starts',[])+did(m,'playing_timer_start')
     def step(m,*a,**k):  # one input or timer step, keeping every timer restart it makes
         r=(m.advance if k.pop('wait',False) else m.call)(*a,**k); keep(m); return r
+    # Progress keeps stock volume; Seek and Mode own both wheel directions, even over a stale
+    # volume popup. Busy/pointer-held controls consume the wheel rather than changing volume.
+    for panel in range(3):
+        for overlay in (False,True):
+            for key in (O['KEY_PREV'],O['KEY_NEXT']):
+                m=np_page(); m.stack=[m.win]
+                for _ in range(panel): m.call(O['KEY_CENTER']); m.advance(DC)
+                if overlay:
+                    popup=m.node('dialog','volume_dialog'); m.top=popup
+                    m.nodes[m.wm]['children'].append(popup); m.stack.append(popup)
+                assert m.call(key,gap=0)==(11 if panel else 0)
+                assert did(m,'window_close')==([popup] if overlay and panel else [])
+                assert m.nodes[m.slider]['value']==(100+(5 if key==O['KEY_NEXT'] else -5) if panel==1 else 100)
+                assert m.mcl('MCL_MODE')==((1 if key==O['KEY_NEXT'] else 3) if panel==2 else 0)
+                assert not did(m,'device_set_volume'); passed()
+    for panel in (1,2):
+        for field in ('animating','pressed'):
+            m=np_page()
+            for _ in range(panel): m.call(O['KEY_CENTER']); m.advance(DC)
+            setattr(m,field,1)
+            assert m.call(O['KEY_NEXT'],gap=0)==11 and m.nodes[m.slider]['value']==100
+            assert m.mcl('MCL_MODE')==0 and not did(m,'device_set_volume'); passed()
     for mode in range(4):
         m=np_page(); m.word(O['MCL_MODE'],mode)
         assert m.call(O['KEY_CENTER'])==11
-        m.advance(DC-1); assert not [c for c in m.calls if c[0]=='config_playmode']
+        m.advance(DC-1); assert m.nodes[m.control]['visible']==0
         m.advance(1)
+        assert not [c for c in m.calls if c[0]=='config_playmode']
+        assert m.nodes[m.control]['text']=='Seek' and m.nodes[m.slider]['visible']==1
+        m.call(O['KEY_CENTER']); m.advance(DC)
+        assert m.nodes[m.slider]['visible']==0 and m.nodes[m.elapsed]['visible']==0
+        assert m.nodes[m.control]['text']==['List play','Repeat one','Shuffle songs','Repeat all'][mode]
+        assert m.call(O['KEY_NEXT'])==11
         assert [c[1:3] for c in m.calls if c[0]=='config_playmode']==[(((mode+1)%4),1)]
+        assert m.call(O['KEY_PREV'])==11 and m.mcl('MCL_MODE')==mode
+        m.call(O['KEY_CENTER']); m.advance(DC)
+        assert m.nodes[m.control]['visible']==0 and m.nodes[m.slider]['visible']==1
         assert not m.screens; passed()
+    # After moving Seek, Centre returns to Progress even after the coalesced seek has settled.
+    for delay in (0,250):
+        m=np_page(); m.call(O['KEY_CENTER']); m.advance(DC)
+        m.call(O['KEY_NEXT'],gap=0)
+        m.advance(delay)
+        m.call(O['KEY_CENTER'],gap=0); m.advance(DC)
+        assert m.nodes[m.control]['visible']==0 and m.nodes[m.slider]['visible']==1
+        assert not did(m,'config_playmode') and not m.screens; passed()
+        # A fresh visit to Seek with no movement still advances to Playback mode.
+        m.call(O['KEY_CENTER']); m.advance(DC)
+        m.call(O['KEY_CENTER']); m.advance(DC)
+        assert m.nodes[m.slider]['visible']==0 and m.nodes[m.control]['text']=='List play'; passed()
+    # Flat mode strip: mirrored white chevrons are separate from the centred text, with no panel.
+    m=np_page()
+    for _ in range(2): m.call(O['KEY_CENTER']); m.advance(DC)
+    m.call(address=HOOKS['widget_on_paint_border'][0],args=(m.control,m.canvas,0,0),gap=0)
+    arrows=[]
+    for i in range(6):
+        arrows.extend((x,y,2,2,color_t(0xffffff)) for x,y in
+                      ((16-i,9+i),(16-i,19-i),(309+i,9+i),(309+i,19-i)))
+    assert [b[:5] for b in m.bands]==arrows and not m.rounded; passed()
+    # Wheel seeking previews in seconds, clamps to the track, and coalesces a fast spin into one seek.
+    m=np_page(); m.call(O['KEY_CENTER']); m.advance(DC)
+    assert m.call(O['KEY_NEXT'],gap=0)==11 and m.nodes[m.slider]['value']==105
+    assert did(m,'playing_timer_clear')==[m.win] and not did(m,'player_seek_time')
+    assert m.call(O['KEY_NEXT'],gap=100)==11 and m.nodes[m.slider]['value']==110
+    m.advance(249); assert not did(m,'player_seek_time')
+    m.advance(1); assert did(m,'player_seek_time')==[110] and did(m,'playing_timer_start')==[m.win]; passed()
+    for value,mx,key,want in ((2,225,O['KEY_PREV'],0),(223,225,O['KEY_NEXT'],225),(0,0,O['KEY_NEXT'],0)):
+        m=np_page(value,mx); m.call(O['KEY_CENTER']); m.advance(DC)
+        assert m.call(key,gap=0)==11 and m.nodes[m.slider]['value']==want
+        m.advance(250); assert did(m,'player_seek_time')==([want] if mx else []); passed()
+    for interrupt in ('track','queue','replaced','page','touch','sleep','destroy'):
+        m=np_page(); m.call(O['KEY_CENTER']); m.advance(DC); m.call(O['KEY_NEXT'],gap=0)
+        if interrupt=='track': m.word(O['MCL_POS'],2)
+        elif interrupt=='queue': m.word(syms['mcl_pdeqplaylist'],m.deque([m.song('New')]))
+        elif interrupt=='replaced':
+            r=m.items(m.get(syms['mcl_pdeqplaylist']))[m.mcl('MCL_POS')]
+            m.word(r+O['REC_PATH'],m.string('/p/New'))
+        elif interrupt=='page': m.top=m.node('window','home_page')
+        elif interrupt=='touch': m.call(address=HOOKS['on_wm_tsdown_before_fun'][0],gap=0)
+        elif interrupt=='sleep': m.byte(syms['g_backlight_status'],0)
+        else:
+            f,ctx=m.handler(m.win,O['EVT_DESTROY']); m.call(address=f,args=(ctx,m.event,0,0),gap=0)
+        m.advance(250); assert not did(m,'player_seek_time'),interrupt; passed()
+    # A seek thumb is centred on the current position and stays inside the bar at either end.
+    for value in (0,100,225):
+        m=np_page(value); m.call(O['KEY_CENTER']); m.advance(DC)
+        m.call(address=HOOKS['widget_on_paint_border'][0],args=(m.slider,m.canvas,0,0),gap=0)
+        assert m.rounded[-1]['rect']==(315*value//225,9,12,12)
+        assert m.rounded[-1]['color']==color_t(0xffffff); passed()
+    m=np_page(); m.call(O['KEY_CENTER']); m.advance(DC); m.timer_fail=True
+    assert m.call(O['KEY_NEXT'],gap=0)==11 and did(m,'player_seek_time')==[105]
+    assert did(m,'playing_timer_start')==[m.win] and not m.timers; passed()
     m=np_page(); m.word(O['MCL_MODE'],2)
     assert m.call(O['KEY_CENTER'])==11 and m.call(O['KEY_CENTER'],gap=100,clear=False)==11
     m.advance(DC)
@@ -3382,17 +3473,20 @@ if variant=='ipod':
     assert not m.u.mem_read(syms['g_backlight_status'],1)[0]; passed()
     # The wheel's transparent volume dialog still belongs to Now Playing's Centre gesture.
     for double in (False,True):
-        m=np_page(); m.nodes[m.wm]={'children':[m.win]}
+        m=np_page(); m.nodes[m.wm]={'children':[m.win]}; m.stack=[m.win]
         volume=m.node('dialog','volume_dialog'); m.nodes[m.wm]['children'].append(volume); m.top=volume
+        m.stack.append(volume)
         assert Machine.release(m)==11
         if double: assert Machine.release(m,100)==11
         m.advance(DC)
         assert m.screens==([0] if double else [])
-        assert [c[1:3] for c in m.calls if c[0]=='config_playmode']==([] if double else [(1,1)]); passed()
+        assert not [c for c in m.calls if c[0]=='config_playmode']
+        assert m.nodes[m.control].get('text')== (None if double else 'Seek'); passed()
     for field in ('animating','pressed'):
         m=np_page(); setattr(m,field,1)
         assert Machine.release(m)==11
         m.advance(DC); assert not m.screens and m.mcl('MCL_MODE')==0; passed()
+
     # The lyrics page (slide value 1) with lyrics: the wheel scrolls scroll_lrc LYRIC_STEP a tick within
     # its content ahead of the volume, with stock's timer (which re-pins the current line)
     # stopped until SCRUB_MS after the last tick. Another page or no lyrics leaves the wheel on volume.

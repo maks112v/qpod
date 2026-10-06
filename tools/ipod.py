@@ -360,13 +360,16 @@ def playing_page(root):
     buttons, title, artist = root[3][:3]
     buttons[1] = [0, 0, 375, NP_TOP]
     named['img_return'][1][0] = -200  # the hardware Return, as on the pages whose navbars are hidden
-    for i, name in enumerate(['img_fav', 'img_more', 'img_playmode']):
+    # Stock still updates this widget by name; mode selection lives in the bottom control now.
+    named['img_playmode'][1][0] = -200
+    named['img_playmode'][2].update(visible='false', enable='false')
+    for i, name in enumerate(['img_fav', 'img_more']):
         n = named[name]
-        n[1] = [NP_ICONS_END - (3 - i) * NP_ICON, 0, NP_ICON, NP_TOP]
+        n[1] = [NP_ICONS_END - (2 - i) * NP_ICON, 0, NP_ICON, NP_TOP]
         n[2] = {k: v for k, v in n[2].items() if not k.endswith(('_offset', 'text_align_h'))}
         if 'image' in n[2]:
             n[2]['draw_type'] = 'center'
-    buttons[3].append(['label', [NP_POS_X, 0, NP_ICONS_END - 3 * NP_ICON - NP_POS_X, NP_TOP], {
+    buttons[3].append(['label', [NP_POS_X, 0, NP_ICONS_END - 2 * NP_ICON - NP_POS_X, NP_TOP], {
         'name': 'label_ipod_pos', 'style:normal:font_size': '16', 'style:normal:text_color': NP_GREY,
         'style:normal:text_align_h': 'left'}, []])
 
@@ -415,6 +418,10 @@ def playing_page(root):
     for n in (named['label_playtime'], remain):
         for key in n[2]:
             if key.endswith(':text_color'): n[2][key] = NP_GREY
+    root[3].append(['label', [x, y - 11, w, h + 22], {
+        'name': 'label_ipod_control', 'visible': 'false',
+        'style:normal:font_size': '20', 'style:normal:text_color': '#ffffff',
+        'style:normal:text_align_h': 'center', 'style:normal:text_align_v': 'middle'}, []])
     root[3][1:3] = []
     root[3].insert(3, remain)
 

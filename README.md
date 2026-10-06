@@ -144,11 +144,13 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 
 | Control                   | What it does                                                                                                                                                     |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Wheel**                 | One row per tick; spin to speed up. Outside menus it sets volume.                                                                                                |
-| **Centre button**         | Opens the highlighted item. On Now Playing, press once to cycle play modes or twice to turn the screen off.                                                     |
+| **Wheel**                 | One row per tick; spin to speed up. On Now Playing it controls volume, seeking or playback modes, depending on the bottom control. |
+| **Centre button**         | Opens the highlighted item. On Now Playing, cycles Progress → Seek → Playback mode. Double-click turns the screen off. |
 | **Double Centre**         | Turns the screen off. On the lock screen, unlocks the player.                                                                                                   |
 | **Hold Centre**           | Song: queue, favourite, playlist, go to album or artist. Album, artist, genre or folder: queue, shuffle, playlist; a Coverflow album: queue, shuffle, go to artist. |
 | **Hold Play/Pause**       | Opens Now Playing without changing playback.                                                                                                                    |
+
+On Now Playing, Seek adds a position thumb. Turn the wheel to move five seconds per tick, or drag the bar directly. After wheel seeking, Centre returns to Progress; without a change, it advances to Playback mode. Playback mode replaces the bar with the current mode; turn the wheel to select List play, Repeat one, Shuffle songs or Repeat all. The normal progress view keeps the wheel on volume, or lyric scrolling while lyrics are shown.
 | **Hold Return** (iPod)    | Opens Now Playing; the next Return goes back.                                                                                                                    |
 | **Pull to search** (iPod) | At the top of Library (Local Songs), pull down until "Release to search" appears.                                                                                |
 

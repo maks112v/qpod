@@ -374,7 +374,7 @@ album, and a slim capsule bar:
 
 ```
   0 +---------------------------------------------------------+
-    | 3 of 12 (16,0 187x40)         fav 203  more 253  mode 303|  icons 50x40
+    | 3 of 12 (16,0 237x40)                  fav 253  more 303|  icons 50x40
  40 +---------------------------------------------------------+
     |  .-----------.                                          |  slide_view 0,40 375x186
     |  |    art    |  Title   (194,95 165x28, white 22)       |
@@ -399,11 +399,20 @@ over the image in the page's black, with an anti-aliased edge pixel. The title i
 white (`NP_TITLE_PX`); artist, album, "3 of 12" and both times are the stock secondary grey
 `#AAAAAA`. Long lines scroll, as stock.
 
+Centre cycles only the bottom band: progress, seeking, then playback mode. After wheel seeking,
+the next Centre press returns to progress instead. Seeking adds a white
+position thumb and a small Seek label between the times. Playback mode uses centred white text
+and separate mirrored chevrons at the band's ends, without brackets, a decorative panel or extra
+animation. The artwork and metadata stay in place. The wheel selects the four existing modes;
+double-click locking and native touch seeking are unchanged.
+The top row retains Favourite and More; the redundant mode button is hidden, disabled and moved
+off-screen, but remains allocated for stock's mode-icon updates by name.
+
 The art, title, artist and album are the slide_view's first page, so a swipe replaces all of them
 with the stock lyrics or info page. Those keep their stock 225-pixel column, centred: stock creates
 each lyric line 225 pixels wide. The big play/pause icon stays centred on the art and the loading
 spinner moves with it. The on-screen Return icon moves off-screen, as on the pages whose navbars are
-hidden; the hardware Return does the same. Favourite, More and the play mode icon keep their stock
+hidden; the hardware Return does the same. Favourite and More keep their stock
 images and handlers in the top row.
 
 The bar is a plain-colour capsule (radius half its height, track and fill): a `#1C1C1C` track
@@ -412,10 +421,10 @@ The asset holds Graphite's; `ringnav_playing` sets the current accent's. Tap or 
 is stock's label; the remaining time replaces stock's total. Sizes are `NP_*` constants in
 `tools/ipod.py`; see [internals.md](internals.md#now-playing-ipod).
 
-**Centre button.** A short press cycles the stock play modes in their displayed order: Order,
-Repeat One, Shuffle and Repeat All. A double press within `DOUBLE_CLICK_MS` (200 ms) cancels the
-pending mode change and turns the screen off. The wheel continues to control volume. Seeking stays
-available by tapping or dragging the progress bar.
+**Centre button.** A short press selects the next bottom control. After changing Seek with the
+wheel, it returns to Progress. A double press within `DOUBLE_CLICK_MS` (200 ms) cancels the
+pending control change and turns the screen off. The wheel controls volume only in Progress;
+Seek and Playback mode use it for their selected option. Touch seeking remains available.
 
 The top row's text and icons, the bar's ends and the times keep clear of the corners
 ([Rounded corners](#rounded-corners)).

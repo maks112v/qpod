@@ -35,6 +35,8 @@ extern const char *track_name(char *buf, unsigned size, void *t);
 #define GLIDE_MS 300
 #define SCROLL_MARGIN 12
 #define DOUBLE_CLICK_MS 200
+#define NP_SEEK_STEP 5
+#define NP_SEEK_MS 250
 #define HOME_FAST_WINDOW_MS 200
 #define HOME_SLIDE_MS 200
 #define HOME_FAST_SLIDE_MS 120
@@ -142,13 +144,16 @@ typedef struct {
     /* Now Playing's window and payload-filled widgets, and the sources they last showed. */
     void *np_win, *np_pos, *np_album, *np_slider, *np_remain, *np_elapsed, *np_cover;
     void *np_slide, *np_lrc; /* the art/lyrics/info pages and the lyric lines' scroll_view */
+    void *np_control, *np_seek_queue;
+    int np_panel, np_mode, np_seek_value, np_seek_pos, np_seek_changed;
+    unsigned np_seek_timer, np_seek_hash;
     /* Volume: the dialog vol_paint last drew, its value and the redraw timer */
     void *vol_dialog;
     int vol_drawn;
     unsigned vol_timer;
     unsigned np_hash; /* of the album text, position and queue length shown, 0 to refresh */
     int np_left;
-    /* A centre press waits in np_press for a second one: one cycles the play mode, two sleep. */
+    /* One Centre cycles the bottom control; two sleep. */
     unsigned np_press, np_press_at;
     unsigned lyric_timer; /* runs while the wheel holds the lyrics and stock's timer is stopped */
     /* The Display settings, read from config.ini on first use, and the display page's value labels.
@@ -1304,6 +1309,35 @@ static void paint_letter(void *w, void *canvas) {
     canvas_set_clip_rect(canvas, &old);
 }
 
+/* The mode strip uses small drawn chevrons, not punctuation in the mode's text. */
+static void paint_mode(void *w, void *canvas) {
+    if (w != st.np_control || st.np_panel != 2 || !P(canvas, CANVAS_LCD)) return;
+    int width = I(w, W_W), cy = I(w, W_H) / 2;
+    if (width < 48 || cy < 6) return;
+    unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
+    canvas_set_fill_color(canvas, RGBA(0xffffff));
+    for (int i = 0; i < 6; ++i) {
+        canvas_fill_rect(canvas, 16 - i, cy - 6 + i, 2, 2);
+        canvas_fill_rect(canvas, 16 - i, cy + 4 - i, 2, 2);
+        canvas_fill_rect(canvas, width - 18 + i, cy - 6 + i, 2, 2);
+        canvas_fill_rect(canvas, width - 18 + i, cy + 4 - i, 2, 2);
+    }
+    canvas_set_fill_color(canvas, fill);
+}
+
+/* A seek thumb distinguishes the wheel-controlled position from passive progress. */
+static void paint_seek(void *w, void *canvas) {
+    if (w != st.np_slider || st.np_panel != 1 || !P(canvas, CANVAS_LCD)) return;
+    int max = widget_get_prop_int(w, "max", 0);
+    int value = widget_get_prop_int(w, "value", 0), width = I(w, W_W);
+    if (max <= 0 || width < 12) return;
+    unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
+    rect_t thumb = { (width - 12) * clamp_step(0, max, value) / max,
+                     (I(w, W_H) - 12) / 2, 12, 12 };
+    fill_box(canvas, &thumb, RGBA(0xffffff), 6);
+    canvas_set_fill_color(canvas, fill);
+}
+
 /* Now Playing's art gets NP_ART_RADIUS corners, painted over it in the page's black: each corner
  * row outside the arc, then its edge pixel at the alpha of its uncovered part (1/16 px). */
 static void paint_cover(void *w, void *canvas) {
@@ -1449,6 +1483,8 @@ int ringnav_paint(void *w, void *canvas) {
     paint_chevrons(w, canvas);
     paint_letter(w, canvas);
     paint_cover(w, canvas);
+    paint_seek(w, canvas);
+    paint_mode(w, canvas);
     coverflow_home_clip(w, canvas, 0);
 #else
     paint_selection(w, canvas);
@@ -1676,10 +1712,38 @@ static void clock_text(void *label, int negative, int t) {
     widget_set_text_utf8(label, s);
 }
 
+/* The Classic-style bottom band is flat: a progress bar, seek thumb, or centred mode label. */
+static void np_controls(void) {
+    if (!st.np_control || !st.np_slider) return;
+    int modes = st.np_panel == 2;
+    widget_set_visible(st.np_slider, !modes, 0);
+    if (st.np_elapsed) widget_set_visible(st.np_elapsed, !modes, 0);
+    if (st.np_remain) widget_set_visible(st.np_remain, !modes, 0);
+    widget_set_visible(st.np_control, st.np_panel != 0, 0);
+    if (st.np_panel == 1 && st.np_elapsed) {
+        widget_set_prop_int(st.np_control, "style:normal:font_size", NP_TIMES_PX);
+        widget_move_resize(st.np_control, 100, I(st.np_elapsed, W_Y),
+                           I(st.np_win, W_W) - 200, I(st.np_elapsed, W_H));
+        widget_set_text_utf8(st.np_control, "Seek");
+    } else if (modes) {
+        widget_set_prop_int(st.np_control, "style:normal:font_size", 20);
+        static const char *const names[] = {
+            "List play", "Repeat one", "Shuffle songs", "Repeat all"
+        };
+        int mode = *(volatile int *)MCL_MODE;
+        widget_move_resize(st.np_control, I(st.np_slider, W_X), I(st.np_slider, W_Y),
+                           I(st.np_slider, W_W), I(st.np_slider, W_H));
+        widget_set_text_utf8(st.np_control, names[mode >= 0 && mode < 4 ? mode : 0]);
+        st.np_mode = mode;
+    }
+    widget_invalidate_force(st.np_win, (void *)0);
+}
+
 /* Now Playing's "3 of 12", album and remaining time (slider max less value, stock's seconds, so a
  * drag previews it). Labels are written only when their source changes. */
 static void np_sync(void *top) {
     if (!top || top != st.np_win) return;
+    if (st.np_panel == 2 && st.np_mode != *(volatile int *)MCL_MODE) np_controls();
     unsigned at, n;
     void *r = queue_now(&at, &n);
     const char *album = now_tag(r, REC_ALBUM);
@@ -1741,20 +1805,96 @@ static int np_lyrics(unsigned key) {
 
 static void np_cancel(void) {
     stop_timer(&st.np_press);
+    if (st.np_seek_timer) {
+        stop_timer(&st.np_seek_timer);
+        if (st.np_win) playing_timer_start(st.np_win);
+    }
     lyric_end();
 }
 
-/* A single centre press advances the stock play mode and its Now Playing icon. */
-static int np_single(const void *info) {
+/* The native seek may block, so rapid wheel ticks preview locally and seek once after settling.
+ * A changed queue/track rejects the pending target rather than seeking the next song. */
+static unsigned np_track_key(void) {
+    unsigned at, n;
+    void *r = queue_now(&at, &n);
+    return r ? hash_bytes(fnv(FNV_SEED, P(r, REC_PATH)), (const unsigned char *)r + REC_CUE_START, 8) : 0;
+}
+
+static int np_seek(const void *info) {
     (void)info;
-    st.np_press = 0;
-    int mode = *(volatile int *)MCL_MODE;
-    config_playmode(mode >= 0 && mode < 3 ? mode + 1 : 0, 1);
+    st.np_seek_timer = 0;
+    if (!st.np_win) return 0;
+    if (usable() && window_manager_get_top_window(window_manager()) == st.np_win &&
+        st.np_seek_queue == P(mcl_pdeqplaylist, 0) &&
+        st.np_seek_pos == *(volatile int *)MCL_POS && st.np_seek_hash == np_track_key())
+        player_seek_time(st.np_seek_value);
+    playing_timer_start(st.np_win);
     return 0;
 }
 
-/* One centre press cycles Order, Repeat One, Shuffle and Repeat All. A second press within
- * DOUBLE_CLICK_MS cancels that change and takes the stock screen-off path. */
+static int np_wheel(void *top, unsigned key) {
+    if (!st.np_panel || (key != KEY_PREV && key != KEY_NEXT)) return 0;
+    /* The caller also accepts Now Playing's volume overlay. It cannot own the wheel here. */
+    if (top != st.np_win) window_close(top);
+    stop_timer(&st.np_press);
+    int dir = key == KEY_NEXT ? 1 : -1;
+    if (st.np_panel == 2) {
+        int mode = *(volatile int *)MCL_MODE;
+        config_playmode(mode >= 0 && mode < 4 ? (mode + dir + 4) % 4 : 0, 1);
+        np_controls();
+        return 1;
+    }
+    if (!st.np_slider) return 1;
+    int max = widget_get_prop_int(st.np_slider, "max", 0);
+    if (max <= 0) return 1;
+    if (st.np_seek_timer && (st.np_seek_queue != P(mcl_pdeqplaylist, 0) ||
+                            st.np_seek_pos != *(volatile int *)MCL_POS || st.np_seek_hash != np_track_key())) {
+        np_cancel();
+        return 1;
+    }
+    int value = widget_get_prop_int(st.np_slider, "value", 0);
+    int next = clamp_step(value, max, dir * NP_SEEK_STEP);
+    if (value == next) return 1;
+    lyric_end();
+    if (!st.np_seek_timer) playing_timer_clear(st.np_win);
+    st.np_seek_queue = P(mcl_pdeqplaylist, 0);
+    st.np_seek_pos = *(volatile int *)MCL_POS;
+    st.np_seek_hash = np_track_key();
+    st.np_seek_value = next;
+    st.np_seek_changed = 1;
+    widget_set_prop_int(st.np_slider, "value", next);
+    clock_text(st.np_elapsed, 0, next);
+    np_sync(st.np_win);
+    rearm(&st.np_seek_timer, np_seek, NP_SEEK_MS);
+    if (!st.np_seek_timer) np_seek((void *)0);
+    return 1;
+}
+
+/* A single Centre press changes the bottom control, never the playback mode itself. */
+static int np_single(const void *info) {
+    (void)info;
+    st.np_press = 0;
+    if (!st.np_win) return 0;
+    void *wm = window_manager(), *top = window_manager_get_top_window(wm);
+    unsigned n = widget_count_children(wm);
+    if (top != st.np_win && top && n >= 2 && widget_get_child(wm, n - 2) == st.np_win &&
+        !tk_strcmp(widget_get_prop_str(top, "name", ""), "volume_dialog"))
+        window_close(top);
+    else if (top != st.np_win || !usable()) {
+        np_cancel();
+        return 0;
+    }
+    if (st.np_seek_timer) {
+        stop_timer(&st.np_seek_timer);
+        np_seek((void *)0);
+    }
+    st.np_panel = st.np_panel == 1 && st.np_seek_changed ? 0 : (st.np_panel + 1) % 3;
+    st.np_seek_changed = 0;
+    np_controls();
+    return 0;
+}
+
+/* One Centre cycles progress, seek and modes. A double click keeps the stock screen-off path. */
 static int np_key(unsigned key) {
     unsigned now = (unsigned)time_now_ms();
     if (key != KEY_CENTER) return 0;
@@ -1762,7 +1902,7 @@ static int np_key(unsigned key) {
         stop_timer(&st.np_press);
         if (now - st.np_press_at < DOUBLE_CLICK_MS) {
             static const unsigned release[EVENT_KEY / 4 + 1] = { [EVENT_KEY / 4] = KEY_CENTER };
-            lyric_end();
+            np_cancel();
             if (g_backlight_status) on_wm_keyup_fun((void *)0, (void *)release);
             return STOP;
         }
@@ -1778,7 +1918,7 @@ static int np_gone(void *win, void *event) {
     if (win == st.np_win) {
         st.np_win = (void *)0;
         st.np_hash = 0;
-        st.np_slider = st.np_elapsed = st.np_cover = st.np_slide = st.np_lrc = (void *)0;
+        st.np_slider = st.np_elapsed = st.np_cover = st.np_slide = st.np_lrc = st.np_control = (void *)0;
         np_cancel();
     }
     return 0;
@@ -1798,9 +1938,14 @@ int ringnav_playing(void *win, void *ctx) {
     st.np_cover = widget_lookup(win, "img_cover", 1);
     st.np_slide = widget_lookup(win, "slide_view", 1);
     st.np_lrc = widget_lookup(win, "scroll_lrc", 1);
+    st.np_control = widget_lookup(win, "label_ipod_control", 1);
+    st.np_panel = 0;
+    st.np_seek_changed = 0;
+    st.np_mode = -1;
     st.np_hash = 0;
     st.np_left = -1;
     np_fill();
+    np_controls();
     widget_on(win, EVT_DESTROY, np_gone, win);
     np_sync(win);
     visualizer_attach(win);
@@ -3550,8 +3695,11 @@ int ringnav(void *ctx, void *event) {
     }
     if (!playing || window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm)) {
         np_cancel();
-        if (playing && key == KEY_CENTER) return STOP;
-    } else if (key != KEY_CENTER && top == st.np_win && np_lyrics(key))
+        if (playing && (key == KEY_CENTER ||
+                        (st.np_panel && (key == KEY_PREV || key == KEY_NEXT)))) return STOP;
+    } else if (np_wheel(top, key))
+        return STOP;
+    else if (key != KEY_CENTER && top == st.np_win && np_lyrics(key))
         return STOP;
     else if (key == KEY_CENTER)
         return np_key(key);

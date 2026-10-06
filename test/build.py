@@ -337,11 +337,17 @@ def validate_assets(directory):
             named = {n[2].get('name'): n for n in walk(root)}
             assert {n[2].get('name') for n in walk(decode(original))} < set(named)  # stock names kept
             assert [n[2].get('name') for n in root[3]] == ['view_buttons', 'label_playtime', 'label_playlen', 'label_ipod_remain',
-                                                           'slide_view_view', 'slider_play', 'img_repeata', 'img_repeatb', 'image_wait']
+                                                           'slide_view_view', 'slider_play', 'img_repeata', 'img_repeatb', 'image_wait', 'label_ipod_control']
+            control = named['label_ipod_control']
+            assert control[1] == [NP_BAR[0],240,NP_BAR[2],30] and control[2]['visible'] == 'false'
+            assert control[2]['style:normal:text_color'] == '#ffffff'
+            assert control[2]['style:normal:text_align_h'] == 'center' and control[2]['style:normal:text_align_v'] == 'middle'
             pos = named['label_ipod_pos'][1]
             assert pos[0] + pos[2] == named['img_fav'][1][0] and named['img_return'][1][0] < 0
-            icons = [named[n][1] for n in ('img_fav', 'img_more', 'img_playmode')]
-            assert [g[1:] for g in icons] == [[0, 50, 40]]*3 and [b[0] - a[0] for a, b in zip(icons, icons[1:])] == [50, 50]
+            icons = [named[n][1] for n in ('img_fav', 'img_more')]
+            assert [g[1:] for g in icons] == [[0, 50, 40]]*2 and icons[1][0] - icons[0][0] == 50
+            assert named['img_playmode'][1][0] < 0 and named['img_playmode'][2]['visible'] == 'false'
+            assert named['img_playmode'][2]['enable'] == 'false'
             album = named['view_album'][3]
             assert [n[2]['name'] for n in album] == ['img_cover', 'img_playstate', 'scrlabel_title', 'scrlabel_artist', 'label_ipod_album']
             # 16px outer margins, 12px from the art to the text, the text column 165px wide; the title larger.
