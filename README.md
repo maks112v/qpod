@@ -120,6 +120,7 @@ Flash the [official firmware](https://en.shanling.com/download/150) the same way
 | -------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | **System settings → Power management** | **Charge limit** | **80%** stops charging at 80% and starts again at 75%, so a Q2 left plugged in isn't held full. Off by default.                         |
 | **System settings → Power management** | **Low power**    | Longer battery: the second CPU core sleeps while the screen is off, and the screen-on UI idles when you don't touch it. Off by default. |
+| **System settings → Power management** | **Wake**         | **Double click** (default) or **Single click**: Centre wakes the screen and unlocks the player. |
 | **Audio settings**                     | **Artists**      | **Artist** (default) or **Album Artist**: browse Artists by the Album Artist tag, so guest artists don't split albums.                  |
 
 Charge limit applies while the Q2 is on; charging while it's powered off is stock's. Low power never touches the sound, EQ, brightness or radios. Audio settings also has stock's DAC **Filter**.
@@ -132,6 +133,9 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 - **Now Playing:** "3 of 12", large rounded cover beside title, artist and album, and a slim accent progress capsule.
 - **Visualizer:** swipe Now Playing to its fourth page: Spectrum, Oscilloscope, VU Meters or Halo. Tap to switch; your choice is kept. It follows what you hear, EQ included.
 - **Quick settings:** pull down from the top edge.
+- **Slider settings:** turn the wheel to adjust brightness, maximum volume, startup volume or balance. In Quick Settings, the wheel adjusts brightness.
+- **Shutdown:** use the power control in Quick Settings. Holding Centre never shuts down.
+- **Wake:** double-click Centre by default. System settings → Power management → Wake can switch to a single click, including unlocking.
 - **Page slides:** in from the right, back out on Return.
 - **Fast-scroll letter:** spinning a long list shows the letter it sorts under (C for The Cure).
 - **Starts on Home.** **Memory playback → Location** restores your queue, paused; **Track** restarts the song. **In-Vehicle mode** starts playing.

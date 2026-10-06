@@ -121,8 +121,8 @@ typedef struct {
      * offline (cpu_off), this boot's first offline is done (cpu_marked), and cpu_bad is 0 before
      * the check, 1 usable, 2 refused by an earlier boot's stall, 3 refused by the kernel;
      * last_input times the screen-on idle. */
-    int pod_read, charge_limit, low_power, charge_held, cpu_off, cpu_bad, cpu_marked;
-    void *pod_label[3];
+    int pod_read, charge_limit, low_power, single_wake, charge_held, cpu_off, cpu_bad, cpu_marked;
+    void *pod_label[4];
     unsigned charge_at, last_input, cpu_retry;
 #if IPOD
     void *pull_page, *pull_surface;
@@ -1477,31 +1477,34 @@ static void *list_row(void *view, const char *icon, int (*click)(void *, void *)
     return label;
 }
 
-/* Power management's Charge limit and Low power (docs/internals.md#charge-limit, #low-power), Q2POD
- * CHARGELIMIT and LOWPOWER in config.ini, and Audio settings' Artists, which is stock's own
+/* Power management's Charge limit, Low power and Wake use Q2POD CHARGELIMIT, LOWPOWER and
+ * SINGLEWAKE in config.ini. Audio settings' Artists uses stock's own
  * PLAYSET ARTISTTYPE (artist_type, the artist page's switch; docs/internals.md#album-artists). */
 #define STR_(x) #x
 #define STR(x) STR_(x)
-enum { POD_CHARGE, POD_LOW, POD_ARTISTS };
+enum { POD_CHARGE, POD_LOW, POD_WAKE, POD_ARTISTS };
 static void pod_settings(void) {
     if (st.pod_read) return;
     st.charge_limit = config_value("Q2POD", "CHARGELIMIT", 2);
     st.low_power = config_value("Q2POD", "LOWPOWER", 2);
+    st.single_wake = config_value("Q2POD", "SINGLEWAKE", 2);
     st.pod_read = 1;
 }
 static void pod_text(int i) {
     static const char *const names[][2] = {
         { "Charge limit: Off", "Charge limit: " STR(CHARGE_STOP) "%" },
         { "Low power: Off", "Low power: On" },
+        { "Wake: Double click", "Wake: Single click" },
         { "Artists: Artist", "Artists: Album Artist" },
     };
     int v = i == POD_CHARGE ? st.charge_limit
             : i == POD_LOW  ? st.low_power
+            : i == POD_WAKE ? st.single_wake
                             : I(artist_type, 0) == 1;
     widget_set_text_utf8(st.pod_label[i], names[i][v]);
 }
-/* Centre or tap toggles and saves. Charge limit and Low power take effect on the next UI loop pass
- * (power_poll); Artists on the next load of an artist list, as the artist page's switch does. */
+/* Centre or tap toggles and saves. Wake takes effect immediately; Charge limit and Low power on
+ * the next UI loop pass (power_poll); Artists on the next load of an artist list. */
 static int pod_click(void *ctx, void *event) {
     (void)event;
     int i = (int)(long)ctx;
@@ -1511,9 +1514,12 @@ static int pod_click(void *ctx, void *event) {
         I(artist_type, 0) = v;
         write_int_config(v, "PLAYSET", "ARTISTTYPE");
     } else {
-        int *value = i == POD_LOW ? &st.low_power : &st.charge_limit;
+        int *value = i == POD_LOW ? &st.low_power
+                     : i == POD_WAKE ? &st.single_wake : &st.charge_limit;
         *value = !*value;
-        write_int_config(*value, "Q2POD", i == POD_LOW ? "LOWPOWER" : "CHARGELIMIT");
+        write_int_config(*value, "Q2POD", i == POD_LOW ? "LOWPOWER"
+                         : i == POD_WAKE ? "SINGLEWAKE" : "CHARGELIMIT");
+        if (i == POD_WAKE) st.unlock_waiting = 0;
         st.charge_at = 0;
     }
     pod_text(i);
@@ -1531,9 +1537,9 @@ static void pod_rows(void *win, const char *view_name, int first, int n, const c
 /* systemset_powermanager_page_init and playset_playset_page_init: stock builds its rows, then
  * these follow in the same widgets and styles (list_row), with the value in the label. */
 int ringnav_powermanager(void *win, void *ctx) {
-    static const char *const icons[] = { "usb_chargeswitch", "system_powermanager" };
+    static const char *const icons[] = { "usb_chargeswitch", "system_powermanager", "system_keylock" };
     int result = stock_power_trampoline(win, ctx);
-    pod_rows(win, "scroll_view_powermanager", POD_CHARGE, 2, icons);
+    pod_rows(win, "scroll_view_powermanager", POD_CHARGE, 3, icons);
     return result;
 }
 int ringnav_audioset(void *win, void *ctx) {
@@ -3080,10 +3086,18 @@ static int qm_hold(void) {
     return 1;
 }
 
-/* Stock long-key callback: centre opens a row's actions; Play/Pause opens Now Playing. */
+/* Centre opens row actions or does nothing; shutdown stays in Quick Settings. */
 int ringnav_keylong(void *ctx, void *event) {
     unsigned key = event ? (unsigned)I(event, EVENT_KEY) : 0;
-    if (key == KEY_CENTER && qm_hold()) return STOP;
+    if (key == KEY_CENTER) {
+        np_cancel();
+        if (!qm_hold()) {
+            char *record = input_key(KEY_CENTER);
+            if (record) st.hold_press = *(unsigned long long *)(record + INPUT_KEY_TIME);
+            drop_input();
+        }
+        return STOP;
+    }
     if (key == KEY_PLAY && usable() && !window_manager_is_animating(window_manager()) &&
         !window_manager_get_pointer_pressed(window_manager())) {
         char *record = input_key(KEY_PLAY);
@@ -3417,6 +3431,37 @@ int ringnav_keydown(void *ctx, void *event) {
 }
 #endif
 
+/* Slider-only settings use their stock +/- actions, including validation and persistence.
+ * Quick Settings has no +/- buttons; setting its slider fires the stock value-changed callback. */
+static int settings_wheel(void *top, unsigned key) {
+    if (!top || (key != KEY_PREV && key != KEY_NEXT)) return 0;
+    const char *name = widget_get_prop_str(top, "name", "");
+    int quick = !tk_strcmp(name, "statusbar_dialog");
+    if (!quick && tk_strcmp(name, "backlight_page") && tk_strcmp(name, "maxvol_page") &&
+        tk_strcmp(name, "bootvol_page") && tk_strcmp(name, "balance_page"))
+        return 0;
+    void *wm = window_manager();
+    if (window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm)) return 1;
+    if (quick) {
+        void *slider = widget_lookup(top, "slider_backlight", 1);
+        if (!slider || !widget_get_visible(slider) || !widget_get_prop_bool(slider, "enable", 1))
+            return 1;
+        int value = widget_get_prop_int(slider, "value", 0);
+        int min = widget_get_prop_int(slider, "min", 0), max = widget_get_prop_int(slider, "max", 100);
+        int next = value + (key == KEY_NEXT ? 1 : -1);
+        if (next < min) next = min;
+        if (next > max) next = max;
+        if (next != value) widget_set_prop_int(slider, "value", next);
+        return 1;
+    }
+    void *button = widget_lookup(top, key == KEY_NEXT ? "img_add" : "img_dec", 1);
+    if (button && widget_get_visible(button) && widget_get_prop_bool(button, "enable", 1)) {
+        char click[0x30];
+        stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 0, 0));
+    }
+    return 1;
+}
+
 int ringnav(void *ctx, void *event) {
     pull_cancel();
     /* The stock filter dereferences the event before returning. */
@@ -3425,7 +3470,7 @@ int ringnav(void *ctx, void *event) {
         return 0;
     }
     unsigned key = (unsigned)I(event, EVENT_KEY);
-    int locked_center = key == KEY_CENTER && g_lockscreen_pageflag;
+    int waking_center = key == KEY_CENTER && (!g_backlight_status || g_lockscreen_pageflag);
 #if IPOD
     /* This release's press was silenced by ringnav_keydown: a row change below clicks instead. */
     int owned = st.tone_key == key;
@@ -3434,11 +3479,13 @@ int ringnav(void *ctx, void *event) {
     if (key != KEY_PREV && key != KEY_NEXT) st.wheel_tick = 0; /* a button ends the run */
     int result = stock_keyup_trampoline(ctx, event);
     if ((key == KEY_PLAY || key == KEY_CENTER) && hold_released(key)) return STOP;
-    if (locked_center) {
+    if (waking_center) {
+        pod_settings();
         unsigned now = (unsigned)time_now_ms();
-        if (st.unlock_waiting && now - st.unlock_at < DOUBLE_CLICK_MS) {
+        if (st.single_wake || (st.unlock_waiting && now - st.unlock_at < DOUBLE_CLICK_MS)) {
             st.unlock_waiting = 0;
-            navigator_back(); /* the page's close callback clears g_lockscreen_pageflag */
+            if (!g_backlight_status) on_wm_keyup_fun(ctx, event);
+            if (g_lockscreen_pageflag) navigator_back(); /* the close callback clears the flag */
         } else {
             st.unlock_at = now;
             st.unlock_waiting = 1;
@@ -3489,11 +3536,22 @@ int ringnav(void *ctx, void *event) {
         return result;
     }
     void *wm = window_manager(), *top = window_manager_get_top_window(wm);
-#if IPOD
-    if (top != st.np_win || window_manager_is_animating(wm) ||
-        window_manager_get_pointer_pressed(wm))
+    if (settings_wheel(top, key)) {
+        drop_input();
         np_cancel();
-    else if (key != KEY_CENTER && np_lyrics(key))
+        return STOP;
+    }
+#if IPOD
+    int playing = st.np_win && top == st.np_win;
+    if (st.np_win && top &&
+        !tk_strcmp(widget_get_prop_str(top, "name", ""), "volume_dialog")) {
+        unsigned windows = widget_count_children(wm);
+        playing = windows >= 2 && widget_get_child(wm, windows - 2) == st.np_win;
+    }
+    if (!playing || window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm)) {
+        np_cancel();
+        if (playing && key == KEY_CENTER) return STOP;
+    } else if (key != KEY_CENTER && top == st.np_win && np_lyrics(key))
         return STOP;
     else if (key == KEY_CENTER)
         return np_key(key);

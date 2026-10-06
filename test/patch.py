@@ -532,6 +532,52 @@ def passed():
     global checks
     checks+=1
 
+# Slider settings: wheel ticks dispatch stock +/- clicks rather than changing playback volume.
+for page in ('backlight_page','maxvol_page','bootvol_page','balance_page'):
+    for key,button in ((O['KEY_NEXT'],'img_add'),(O['KEY_PREV'],'img_dec')):
+        m=Machine(); m.page(page); target=m.node('image',button); m.nodes[m.top]['children'].append(target)
+        assert m.call(key)==11 and m.clicks==[target]; passed()
+        for field in ('animating','pressed'):
+            setattr(m,field,1); assert m.call(key)==11 and not m.dispatched(); setattr(m,field,0)
+        m.nodes[target]['enable']=0; assert m.call(key)==11 and not m.dispatched(); passed()
+
+# Execute the stock max-volume button callback and Quick Settings brightness callback. Only
+# widget storage/event delivery and config/hardware boundaries are mocked.
+class SliderSettingsMachine(Machine):
+    def __init__(self,page):
+        super().__init__(); self.page(page)
+        self.mock('write_int_config','config_lightness','slider_set_value','snprintf@GLIBC_2.0')
+    def hook(self,u,address,size,unused):
+        name=self.handlers.get(address,'')
+        if name=='stock_dispatch' and self.nodes[self.top]['name']=='maxvol_page':
+            target,event=[u.reg_read(r) for r in REGS[:2]]; self.calls.append((name,target,event,0))
+            self.clicks.append(target)
+            callback=0x4b783c if self.nodes[target]['name']=='img_add' else 0x4b79d0
+            u.reg_write(UC_MIPS_REG_A0,self.top); u.reg_write(UC_MIPS_REG_T9,callback); u.reg_write(UC_MIPS_REG_PC,callback)
+            return
+        if name=='widget_set_prop_int' and self.nodes[self.top]['name']=='statusbar_dialog':
+            target,prop,value=[u.reg_read(r) for r in REGS[:3]]
+            if self.text(prop)=='value':
+                self.nodes[target]['value']=signed(value)
+                event=self.alloc(0x30); self.word(event,O['EVT_VALUE_CHANGED']); self.word(event+0x10,target)
+                u.reg_write(UC_MIPS_REG_A0,self.top); u.reg_write(UC_MIPS_REG_A1,event)
+                u.reg_write(UC_MIPS_REG_T9,0x49ff54); u.reg_write(UC_MIPS_REG_PC,0x49ff54)
+                return
+        return super().hook(u,address,size,unused)
+
+m=SliderSettingsMachine('maxvol_page'); m.byte(syms['g_maxvolume'],50)
+for name in ('img_add','img_dec','slider_maxvol','label_vol'):
+    m.nodes[m.top]['children'].append(m.node('slider' if name.startswith('slider') else 'image',name))
+assert m.call(O['KEY_NEXT'])==11 and m.u.mem_read(syms['g_maxvolume'],1)==b'3'
+assert [c[1] for c in m.calls if c[0]=='write_int_config']==[51]
+assert m.call(O['KEY_PREV'])==11 and m.u.mem_read(syms['g_maxvolume'],1)==b'2'
+assert [c[1] for c in m.calls if c[0]=='write_int_config']==[50]; passed()
+for value,key,want in ((40,O['KEY_NEXT'],41),(40,O['KEY_PREV'],39),(100,O['KEY_NEXT'],100),(0,O['KEY_PREV'],0)):
+    m=SliderSettingsMachine('statusbar_dialog'); slider=m.node('slider','slider_backlight',value=value,min=0,max=100)
+    m.nodes[m.top]['children'].append(slider)
+    assert m.call(key)==11 and m.nodes[slider]['value']==want
+    assert [c[1] for c in m.calls if c[0]=='config_lightness']==([want] if value!=want else []); passed()
+
 # Execute the stock offset setter after cancelling an animator headed to either boundary.
 # Cover selected rows and the pixel-scroll fallback.
 for populated in (False,True):
@@ -582,6 +628,21 @@ assert m.u.mem_read(syms['g_lockscreen_pageflag'],1)==b'\x01'; passed()
 m=Machine(); m.page('poweroff_page'); m.byte(syms['g_lockscreen_pageflag'],1)
 m.call(O['KEY_CENTER'],gap=0); m.call(O['KEY_PLAY'],gap=50); m.call(O['KEY_CENTER'],gap=50)
 assert not [c for c in m.calls if c[0]=='navigator_back']; passed()
+# Missing/invalid settings require two clicks; SINGLEWAKE=1 wakes and unlocks with one.
+for config,single in (({},False),({'SINGLEWAKE':'1'},True),({'SINGLEWAKE':'0'},False),({'SINGLEWAKE':'bad'},False)):
+    for locked in (False,True):
+        m=Machine(); m.config=config; m.page('poweroff_page' if locked else 'playing_page')
+        m.byte(syms['g_backlight_status'],0); m.byte(syms['g_lockscreen_pageflag'],int(locked))
+        assert m.release()==11
+        assert m.screens==([1] if single else [])
+        assert sum(c[0]=='navigator_back' for c in m.calls)==int(single and locked)
+        if not single:
+            assert m.release(100)==11 and m.screens==[1]
+            assert sum(c[0]=='navigator_back' for c in m.calls)==int(locked)
+        assert not m.clicks; passed()
+m=Machine(); m.page('playing_page'); m.byte(syms['g_backlight_status'],0)
+assert m.release()==11 and m.release(DC+1)==11 and not m.screens
+assert m.release(100)==11 and m.screens==[1]; passed()
 for field in ['animating','pressed']:
     m=Machine(); m.page(); setattr(m,field,1); assert m.call()==11 and not m.moved(); passed()
 
@@ -1020,7 +1081,7 @@ if variant == 'ipod':
     assert not destinations(m)
     assert m.call(170, gap=0) == 11
 passed()
-# Other long-key paths remain byte-for-byte stock; exercise the inert keys and power gate.
+# Other long-key paths remain stock; exercise the inert keys and power gate.
 # Play/Pause is covered below with a real input-device record.
 for key in (172, 173, 222, 223, 218):
     m = long_machine(); m.page('home_page')
@@ -1378,8 +1439,9 @@ for gap in (0,100,DC-1):
     assert m.release()==11 and m.release(gap)==0
     assert m.screens==[0] and not m.u.mem_read(syms['g_backlight_status'],1)[0]
     m.advance(1000); assert not m.clicks and not m.timers
-    # A release while off follows the real stock wake path, with no menu activation.
-    assert m.release()==0 and m.screens==[0,1]
+    # Waking defaults to a double click, with no menu activation.
+    assert m.release()==11 and m.screens==[0]
+    assert m.release(100)==11 and m.screens==[0,1]
     assert m.u.mem_read(syms['g_backlight_status'],1)[0]==1 and not m.clicks; passed()
 # At/after expiry, the first single has dispatched; the next release starts a new single.
 for gap in (DC,DC+1):
@@ -2567,9 +2629,21 @@ m=QueueMachine(); page=m.top
 m.press(6000); assert m.hold()==11 and m.nodes[m.top]['name']=='sortselect_dialog'
 assert {c[1:] for c in m.calls if c[0]=='widget_off_by_func'}=={(m.top,O['EVT_KEY_UP'],O['SORTSELECT_KEYUP']),(m.back,O['EVT_CLICK'],O['SORTSELECT_CLOSE'])}
 assert m.nodes[m.title]['text']=='Row 0' and m.labels()==SONG_MENU
-assert m.hold()==0 and not any(c[0]=='navigator_to' for c in m.calls) and len(m.stack)==2
+assert m.hold()==11 and not any(c[0]=='navigator_to' for c in m.calls) and len(m.stack)==2
 assert m.release()==0
 passed()
+# Centre holds without row actions never enter stock's shutdown confirmation. Their releases
+# are swallowed too, including on Now Playing and when the screen is off or locked.
+for page,flags in (('playing_page',{}),('sysset_page',{}),('home_page',{'g_backlight_status':0}),
+                   ('poweroff_page',{'g_lockscreen_pageflag':1})):
+    m=QueueMachine(page=page)
+    for flag,value in flags.items(): m.byte(syms[flag],value)
+    m.press(8000)
+    assert m.hold()==11 and not m.opened
+    assert m.hold()==11 and not m.opened
+    assert m.release()==0 and not m.screens and not m.opened
+    assert m.u.mem_read(syms['g_poweroff_state'],1)==b'\0'
+    assert m.u.mem_read(syms['g_power_longkey'],1)==b'\0'; passed()
 # A Play/Pause hold opens Now Playing without restarting playback, and its release does not toggle.
 m=QueueMachine(); m.press(7000,O['KEY_PLAY'])
 assert m.hold(O['KEY_PLAY'])==11 and m.opened[-1]==('playing_page',0,0,255,2)
@@ -3306,6 +3380,19 @@ if variant=='ipod':
     m.advance(DC)
     assert not [c for c in m.calls if c[0]=='config_playmode'] and m.screens==[0]
     assert not m.u.mem_read(syms['g_backlight_status'],1)[0]; passed()
+    # The wheel's transparent volume dialog still belongs to Now Playing's Centre gesture.
+    for double in (False,True):
+        m=np_page(); m.nodes[m.wm]={'children':[m.win]}
+        volume=m.node('dialog','volume_dialog'); m.nodes[m.wm]['children'].append(volume); m.top=volume
+        assert Machine.release(m)==11
+        if double: assert Machine.release(m,100)==11
+        m.advance(DC)
+        assert m.screens==([0] if double else [])
+        assert [c[1:3] for c in m.calls if c[0]=='config_playmode']==([] if double else [(1,1)]); passed()
+    for field in ('animating','pressed'):
+        m=np_page(); setattr(m,field,1)
+        assert Machine.release(m)==11
+        m.advance(DC); assert not m.screens and m.mcl('MCL_MODE')==0; passed()
     # The lyrics page (slide value 1) with lyrics: the wheel scrolls scroll_lrc LYRIC_STEP a tick within
     # its content ahead of the volume, with stock's timer (which re-pins the current line)
     # stopped until SCRUB_MS after the last tick. Another page or no lyrics leaves the wheel on volume.
@@ -5109,13 +5196,18 @@ def settings_page(hook,view_name,config={},stock_rows=2):
         return [(c[1],m.text(c[2]),m.text(c[3])) for c in m.calls if c[0]=='write_int_config']
     return m,rows,lambda:[m.nodes[l]['text'] for l in labels],icons,click
 m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager')
-assert len(rows)==2 and icons==['usb_chargeswitch','system_powermanager'] and all(m.nodes[r]['style']=='s_listitem_black' for r in rows)
-assert texts()==['Charge limit: Off','Low power: Off']
+assert len(rows)==3 and icons==['usb_chargeswitch','system_powermanager','system_keylock'] and all(m.nodes[r]['style']=='s_listitem_black' for r in rows)
+assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click']
 assert click(0)==[(1,'Q2POD','CHARGELIMIT')] and texts()[0]==f"Charge limit: {O['CHARGE_STOP']}%"
 assert click(1)==[(1,'Q2POD','LOWPOWER')] and texts()[1]=='Low power: On'
-assert click(0)==[(0,'Q2POD','CHARGELIMIT')] and texts()==['Charge limit: Off','Low power: On']; passed()
+assert click(0)==[(0,'Q2POD','CHARGELIMIT')] and texts()==['Charge limit: Off','Low power: On','Wake: Double click']
+assert click(2)==[(1,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Single click'
+assert click(2)==[(0,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Double click'; passed()
 m,rows,texts,*_=settings_page('power','scroll_view_powermanager',{'CHARGELIMIT':'1','LOWPOWER':'1'})
-assert texts()==[f"Charge limit: {O['CHARGE_STOP']}%",'Low power: On']; passed()
+assert texts()==[f"Charge limit: {O['CHARGE_STOP']}%",'Low power: On','Wake: Double click']; passed()
+m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager',{'SINGLEWAKE':'1'})
+assert texts()[2]=='Wake: Single click'
+assert click(2)==[(0,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Double click'; passed()
 m,rows,texts,icons,click=settings_page('audioset','scroll_view_playset',stock_rows=15)
 assert len(rows)==1 and icons==['playset_folderjump'] and texts()==['Artists: Artist']
 assert click(0)==[(1,'PLAYSET','ARTISTTYPE')] and m.get(syms['artist_type'])==1 and texts()==['Artists: Album Artist']
