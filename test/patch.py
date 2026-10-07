@@ -3603,6 +3603,13 @@ for filename,title,no,want in (('01 - Song.flac','',0,'Song'), ('2. Song.flac','
                                ('03_Song.flac','',0,'Song'), ('4 Song.flac','',4,'Song'),
                                ('99 Luftballons.flac','',0,'99 Luftballons'),
                                ('1984.flac','',0,'1984'), ('01.flac','',0,'01'),
+                               ('01 - Hello, Goodbye.flac','',0,'Hello, Goodbye'),
+                               ('01 - Song.flac','Hello, Goodbye',1,'Hello, Goodbye'),
+                               ('01 - Song.flac','Wait, Wait, Wait',1,'Wait, Wait, Wait'),
+                               ('01 - He’s Here.flac','',0,"He's Here"),
+                               ('01 - Song.flac','He’s Here',1,"He's Here"),
+                               ('01 - Song.flac','‘Hello,’ “Goodbye”',1,"'Hello,' \"Goodbye\""),
+                               ('01 - Song.flac','你好，世界',1,'你好，世界'),
                                ('01 - Song.flac','99 Luftballons',1,'99 Luftballons'),
                                ('01 - Song.flac','01 Love',1,'01 Love')):
     m=CoverflowMachine(); r=track(m,filename,'/p/'+filename,no=no)
