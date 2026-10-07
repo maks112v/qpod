@@ -13,7 +13,7 @@ extern int stock_keyup_trampoline(void *, void *), stock_touch_trampoline(void *
     stock_input_trampoline(void *, void *), stock_buzzer_trampoline(int),
     stock_localclass_trampoline(int), stock_power_trampoline(void *, void *),
     stock_audioset_trampoline(void *, void *), stock_confirm_dialog_trampoline(void *, void *),
-    stock_playermore_trampoline(void *, void *);
+    stock_playermore_trampoline(void *, void *), stock_playlist_rows_trampoline(void *);
 extern void *coverflow_tracks(void *page);
 extern void *coverflow_album(void *page), *coverflow_album_tracks(void *r);
 extern unsigned coverflow_scope(void *page);
@@ -482,8 +482,19 @@ static void home_step(void *w, int dir, unsigned now) {
 }
 
 static int usable(void) {
-    return g_backlight_status && !g_lockscreen_pageflag && !g_testmode_flag && !g_guideflag &&
-           !g_poweroff_state && g_usblink_status != 2 && !bt__recv_pageflag;
+    if (!g_backlight_status || g_lockscreen_pageflag || g_testmode_flag || g_guideflag ||
+        g_poweroff_state || bt__recv_pageflag) return 0;
+    if (g_usblink_status != 2) return 1;
+#if IPOD
+    /* usbmode_exit waits inside this modal prompt before clearing USB mode. The cable is
+     * already out, but the stale mode must not disable the prompt's wheel and Centre. */
+    if (!g_usbdet_value) {
+        void *top = window_manager_get_top_window(window_manager());
+        return top && !tk_strcmp(widget_get_prop_str(top, "name", ""), "confirminfo_dialog") &&
+               widget_get_prop_int(top, "_scan_after_usb", 0);
+    }
+#endif
+    return 0;
 }
 
 static int allowed_top(void *top) {
@@ -1578,8 +1589,8 @@ static void *list_row(void *view, const char *icon, int (*click)(void *, void *)
     return label;
 }
 
-/* The stock player picker uses mode 2 to add its selected queue song, and already offers
- * Create playlist. Mode 0 opens the same page for browsing, rename and delete. Keep More
+/* The stock player picker uses mode 2 to add its selected queue song.
+ * Mode 0 opens the same page for browsing, rename and delete. Keep More
  * underneath so Back returns here without closing a window inside its click dispatch. */
 static int player_playlists(void *win, void *event) {
     (void)win;
@@ -1595,6 +1606,20 @@ int ringnav_playermore(void *win, void *ctx) {
         void *label = list_row(view, (void *)0, player_playlists, win);
         widget_set_text_utf8(label, "Manage playlists");
         widget_restack(P(P(label, W_PARENT), W_PARENT), 2);
+    }
+    return result;
+}
+
+/* iPod hides the navbar's Create button. Put the same action in the navigable list in every
+ * mode, including an empty picker. Hook the rebuild so it survives returning from naming.
+ * Stock playlist buttons keep their names and indices after the new row is inserted. */
+int ringnav_playlist_rows(void *win) {
+    int result = stock_playlist_rows_trampoline(win);
+    void *view = win ? widget_lookup(win, "scroll_view", 1) : (void *)0;
+    if (view) {
+        void *label = list_row(view, (void *)0, playlist_create, win);
+        widget_set_text_utf8(label, "Create playlist");
+        widget_restack(P(P(label, W_PARENT), W_PARENT), 0);
     }
     return result;
 }
@@ -2381,18 +2406,29 @@ int ringnav_confirm_dialog(void *win, void *ctx) {
         { "msg_actionscan", "Scan music", 1 }, { "msg_btreconnect", "Reconnect", 1 },
     };
     const char *prompt = (const char *)ctx + 8, *action = "Continue";
-    int accept = 0;
+    int accept = 0, scan = 0;
     for (unsigned i = 0; i < sizeof actions / sizeof *actions; ++i) {
         const char *translated = locale_info_tr(locale_info(), actions[i].key);
-        if (!tk_strcmp(prompt, actions[i].key) || (translated && !tk_strcmp(prompt, translated))) {
+        int is_scan = !tk_strcmp(actions[i].key, "msg_actionscan");
+        int matched = !tk_strcmp(prompt, actions[i].key) ||
+                      (translated && !tk_strcmp(prompt, translated));
+        /* Startup's type-2 prompt puts the card notice first and the scan question second. */
+        if (!matched && is_scan && B(ctx, 0) == 2) {
+            const char *question = (const char *)ctx + 0x208;
+            matched = !tk_strcmp(question, actions[i].key) ||
+                      (translated && !tk_strcmp(question, translated));
+        }
+        if (matched) {
             action = actions[i].action;
             accept = actions[i].accept;
+            scan = is_scan;
             break;
         }
     }
     widget_set_text_utf8(widget_lookup(win, "img_cancel", 1), "Cancel");
     widget_set_text_utf8(widget_lookup(win, "img_enter", 1), action);
     prop(win, "_selection_default", accept);
+    prop(win, "_scan_after_usb", scan);
     return result;
 }
 #else
@@ -2848,16 +2884,14 @@ int compact_now_playing(void) {
     return 0;
 }
 
-/* Replaces home_page_init's boot resume, navigator_to_with_context("playing_page", ctx) with ctx
- * {queue, index, class, mode}. Car mode (mode 2, plays) keeps that call; otherwise this is the
- * paused start playing_page_init would make, without the page. */
-void ringnav_boot(const char *page, const int *ctx) {
-    if (ctx[3] == 2)
-        navigator_to_with_context(page, ctx);
-    else if (ctx[2] != 0xff)
-        player_start((void *)ctx[0], ctx[1], ctx[2], ctx[3]);
-}
 #endif
+
+/* Restore the remembered queue without autoplay, including In-Vehicle mode. Mode 3 makes
+ * player_start pause after loading; Play/Pause starts it when the user is ready. */
+void ringnav_boot(const char *page, const int *ctx) {
+    (void)page;
+    if (ctx[2] != 0xff) player_start((void *)ctx[0], ctx[1], ctx[2], 3);
+}
 
 /* Play/Pause hold opens Now Playing without making the same gesture a Home toggle. */
 static void open_now_playing(void) {
@@ -3721,12 +3755,28 @@ static int qm_hold(void) {
     return 1;
 }
 
-/* Centre opens row actions or does nothing; shutdown lives in Power management. */
+/* The hidden More widget retains stock's menu callback and current queue context. */
+static int player_more_hold(void) {
+    void *wm = window_manager(), *top = window_manager_get_top_window(wm);
+    if (!usable() || !top || window_manager_is_animating(wm) ||
+        window_manager_get_pointer_pressed(wm) ||
+        tk_strcmp(widget_get_prop_str(top, "name", ""), "playing_page")) return 0;
+    void *button = widget_lookup(top, "img_more", 1);
+    char *record = input_key(KEY_CENTER);
+    if (!record || !button || !widget_get_prop_bool(button, "enable", 1)) return 0;
+    st.hold_press = *(unsigned long long *)(record + INPUT_KEY_TIME);
+    drop_input();
+    char click[0x30];
+    stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 0, 0));
+    return 1;
+}
+
+/* Centre opens player or row actions; shutdown lives in Power management. */
 int ringnav_keylong(void *ctx, void *event) {
     unsigned key = event ? (unsigned)I(event, EVENT_KEY) : 0;
     if (key == KEY_CENTER) {
         np_cancel();
-        if (!qm_hold()) {
+        if (!player_more_hold() && !qm_hold()) {
             char *record = input_key(KEY_CENTER);
             if (record) st.hold_press = *(unsigned long long *)(record + INPUT_KEY_TIME);
             drop_input();

@@ -2670,6 +2670,45 @@ class QueueMachine(Machine):
     def labels(self): return [self.nodes[self.nodes[i]['children'][0]]['text'] for i in self.nodes[self.view]['children']]
     def playback(self): return [c for c in self.calls if c[0] in ('mclStartPlayer','mclStop','mclSetPause','mclSetResume','mclSetSeek','playpause_quick_click')]
 
+# The real stock playlist rebuild, with its navbar hidden as in iPod, must offer creation
+# when empty in browse, library-add and player-add modes, and after returning from naming.
+class PlaylistMachine(QueueMachine):
+    def __init__(self):
+        super().__init__()
+        self.handlers.pop(syms['playlist_create'])  # execute stock's creation gate and navigation
+        self.handlers[0x4b1438]='stock_playlist_navbar'
+        self.mock('widget_restack','getFormatString','view_create','tk_snprintf',
+                  'image_base_set_clickable','file_is_playing')
+    def hook(self,u,address,size,unused):
+        if self.handlers.get(address)=='widget_restack':
+            a,b=[u.reg_read(r) for r in REGS[:2]]
+            kids=next(n['children'] for n in self.nodes.values() if a in n['children'])
+            kids.remove(a); kids.insert(b,a)
+            u.reg_write(UC_MIPS_REG_V0,0); u.reg_write(UC_MIPS_REG_PC,u.reg_read(UC_MIPS_REG_RA))
+        else: super().hook(u,address,size,unused)
+
+def playlist_creation_checks():
+    for mode in (0,1,2):
+        m=PlaylistMachine(); playlist=m.deque([]); m.word(syms['p_deque_playlist'],playlist)
+        m.word(0xa27894,mode); m.word(0xa27898,0xf001)
+        view=m.node('scroll_view','scroll_view'); nav=m.node('view','view_navbar',visible=0)
+        page=m.node('window','playlist_page',[nav,view]); m.top=page
+        queue=m.names()
+        for count in (0,1):
+            if count: m.items(playlist).append(m.song('New playlist'))
+            m.call(address=HOOKS['playlist_rows'][0],args=(page,0,0,0),gap=0)
+            kids=m.nodes[view]['children']; button=m.nodes[kids[0]]['children'][0]
+            label=m.nodes[button]['children'][0]
+            assert m.nodes[label]['text']=='Create playlist'
+            assert len(kids)==1+count+(mode==0)  # stock browse mode also has Import/Export
+            assert m.names()==queue and m.get(0xa27894)==mode and not m.playback()
+            callback,ctx=m.handler(button,O['EVT_CLICK'])
+            m.call(address=callback,args=(ctx,m.event,0,0),gap=0)
+            assert m.nodes[m.top]['name']=='dialog/addplaylist_dialog'
+            m.top=page  # returning from stock's naming dialog rebuilds this same list
+            passed()
+playlist_creation_checks()
+
 SONG_MENU=['Play next','Add to queue','Add to Favourites','Add to playlist','Go to album','Go to artist']
 # A centre hold opens one menu titled by its row. Its release is swallowed, and a repeated long
 # event of the same press opens nothing.
@@ -2686,8 +2725,29 @@ assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==0 and m.top!=page
 m.word(ev+O['EVENT_KEY'],O['KEY_RETURN']); assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==11
 assert m.top==page and not m.toasts and m.names()==['A','B','C'] and m.u.mem_read(syms['g_sort_changeflag'],1)==b'\0'
 passed()
-# Centre holds without row actions never enter stock's shutdown confirmation. Their releases
-# are swallowed too, including on Now Playing and when the screen is off or locked.
+# Now Playing's hold dispatches the hidden More callback, then swallows the release on
+# the opened menu. Repeated long events cannot activate another menu item.
+m=QueueMachine(page='playing_page'); more=m.node('image','img_more',visible=0)
+m.nodes[m.top]['children'].append(more)
+def open_player_more(button,event):
+    assert button==more
+    m.top=m.node('window','playermore_page'); m.stack.append(m.top)
+m.on_click=open_player_more
+m.press(8000); assert m.hold()==11 and m.clicks==[more]
+assert m.nodes[m.top]['name']=='playermore_page'
+assert m.hold()==11 and m.clicks==[more]
+assert m.release()==0 and m.clicks==[more] and not m.screens and not m.playback(); passed()
+# The shortcut respects screen, lock, animation, touch and button availability gates.
+for setup in (lambda m,b:m.byte(syms['g_backlight_status'],0),
+              lambda m,b:m.byte(syms['g_lockscreen_pageflag'],1),
+              lambda m,b:setattr(m,'animating',1),lambda m,b:setattr(m,'pressed',1),
+              lambda m,b:m.nodes[b].update(enable=0)):
+    m=QueueMachine(page='playing_page'); more=m.node('image','img_more')
+    m.nodes[m.top]['children'].append(more); setup(m,more); m.press(8000)
+    assert m.hold()==11 and not m.clicks
+    assert m.release()==0 and not m.screens; passed()
+# Centre holds without available actions never enter stock's shutdown confirmation. Their
+# releases are swallowed too, including when the screen is off or locked.
 for page,flags in (('playing_page',{}),('sysset_page',{}),('home_page',{'g_backlight_status':0}),
                    ('poweroff_page',{'g_lockscreen_pageflag':1})):
     m=QueueMachine(page=page)
@@ -2863,24 +2923,19 @@ for cmp in (0x5ba658,0x5b9d40):
     passed()
 key=lambda t: (m.u.mem_write(0x1100000,t.encode()+b'\0'), m.call(address=symbols(B/'patch.elf')['ringnav_sort_key'],args=(0x1100000,0,0,0),gap=0), m.text(0x1100000))[2]
 assert [key(t) for t in ('  The Cure','THE CURE','The ','The  Cure','A','An ','Ant','周杰伦','The 周杰伦')]==['Cure','CURE','The ','The  Cure','A','An ','Ant','周杰伦','周杰伦']; passed()
-# iPod boots to Home: home_page_init's memory-play resume, run from its stock context build, starts
-# the restored queue paused (mode 3) through player_start as playing_page_init would, and opens no
-# page; a 0xff class starts nothing, as the page's init. Car mode (mode 2) opens Now Playing as stock.
-if variant=='ipod':
-    boot=symbols(B/'patch.elf')['ringnav_boot']
-    assert struct.unpack_from('<I',demo,fileoff(demo,0x523de0))[0]==0x0c000000|boot>>2
-    for car,cls,want in ((0,1,[(0x5550,4,1,3)]),(0,0xff,[]),(1,0xf003,[])):
-        m=Machine(); m.word(syms['g_memory_info'],cls); m.byte(syms['g_carmode'],car)
-        m.u.reg_write(UC_MIPS_REG_GP,0xa26cc0); m.u.reg_write(UC_MIPS_REG_SP,0x7000f000)
-        m.u.reg_write(UC_MIPS_REG_S0,0x5550); m.u.reg_write(UC_MIPS_REG_S1,4)
-        m.u.emu_start(0x523dac,0x523de8,count=1000)
-        nav=[c for c in m.calls if c[0]=='navigator_to_with_context']
-        assert m.started==want
-        if car:
-            assert len(nav)==1 and m.text(nav[0][1])=='playing_page' and nav[0][2]==0x7000f018
-            assert [m.get(0x7000f018+4*i) for i in range(4)]==[0x5550,4,0xf003,2]
-        else: assert not nav
-        passed()
+# Both builds restore the remembered queue paused, including In-Vehicle mode. Run the real
+# home_page_init context construction and its patched call; opening Now Playing starts nothing.
+boot=symbols(B/'patch.elf')['ringnav_boot']
+assert struct.unpack_from('<I',demo,fileoff(demo,0x523de0))[0]==0x0c000000|boot>>2
+for car,cls,want in ((0,1,[(0x5550,4,1,3)]),(0,0xff,[]),
+                     (1,0xf003,[(0x5550,4,0xf003,3)]),(1,0xff,[])):
+    m=Machine(); m.word(syms['g_memory_info'],cls); m.byte(syms['g_carmode'],car)
+    m.u.reg_write(UC_MIPS_REG_GP,0xa26cc0); m.u.reg_write(UC_MIPS_REG_SP,0x7000f000)
+    m.u.reg_write(UC_MIPS_REG_S0,0x5550); m.u.reg_write(UC_MIPS_REG_S1,4)
+    m.u.emu_start(0x523dac,0x523de8,count=1000)
+    assert m.started==want
+    assert not any(c[0]=='navigator_to_with_context' for c in m.calls)
+    passed()
 # Refusals leave the queue alone: a stream queue, or a row whose record changed under the menu.
 m=QueueMachine(); m.word(O['MCL_TYPE'],2); assert m.run(0)=='Queue unchanged' and m.names()==['A','B','C']
 m=QueueMachine(); m.press(1); m.hold(); m.release(); m.word(m.row(0)+O['REC_NAME'],m.string('other'))
@@ -3789,6 +3844,7 @@ class RolloverMachine(CoverflowMachine):
                   'dmrNotifyPlayStatus','dlnaRenderSaveUrlMetadata','reset_repeatinfo','initializeDmrQCurrentInfo',
                   'player_reconfig','add_playrecord','toolsTrimLeft')
         self.handlers.pop(syms['mclStartPlayer'],None)
+        self.handlers.pop(syms['mclStop'],None)
         for i,n in enumerate(sizes):
             folder=f'/mnt/mmc/{i}'; entries=[]
             for j in range(n):
@@ -3816,7 +3872,9 @@ class RolloverMachine(CoverflowMachine):
         self.trace.append((name,self.text(a) if name in ('directory','decoder_start','toolsGetAlbumCover') else a))
         if name=='directory':
             path=self.text(a); self.deqs[self.get(syms['tools_pdeq_directory'])][1]=[self.copy('stSongInfo',r) for r in self.dirs.get(path,[])]; ret=len(self.dirs.get(path,[]))
-        elif name=='decoder_start': self.byte(0xa3be55,1)
+        elif name=='decoder_start':
+            self.byte(0xa3be55,1)
+            self.word(0xa3beac,2) # native decoder-start state at 0x5ad094
         elif name=='malloc': ret=self.alloc((a+3)&~3)
         elif name=='strcpy': u.mem_write(a,self.text(b).encode()+b'\0'); ret=a
         elif name=='strncmp': x,y=self.text(a)[:c],self.text(b)[:c]; ret=(x>y)-(x<y)
@@ -3869,46 +3927,36 @@ class RolloverMachine(CoverflowMachine):
             self.call(address=playing,args=(self.win,0,0,0),gap=0)
         self.byte(syms['g_forcerefresh_flag'],1)
 
+# List play stops at each album boundary with Jump folder enabled. Selecting another
+# album explicitly starts it; ordinary track advancement and parsed metadata still work.
 for sizes in ((2,2,1,1),(1,1,1,1)):
     m=RolloverMachine(sizes); m.setup_ui(); m.artwork(); m.ui()
-    paths=[path for path in m.files]
-    assert m.text(syms['g_play_id3_info'])==paths[0]
-    for index,path in enumerate(paths[1:],1):
-        old=m.text(syms['g_play_id3_info']); m.byte(0xa3be55,0) # hciplayer EOF
-        # Delay the UI scheduler after stock queue replacement on alternate transitions.
-        if index%2:
-            m.call(address=syms['mclAutoChange'],args=(0,0,0,0),gap=0)
-            assert m.text(syms['g_play_id3_info'])==old
-            m.ui()
+    for folder,n in enumerate(sizes):
+        if folder:
+            m.handlers.pop(syms['player_start'],None)
+            m.call(address=syms['player_start'],args=(m.deque(m.dirs[f'/mnt/mmc/{folder}']),0,1,2),gap=0)
+            m.tick()
+        for track in range(n):
+            path=f'/mnt/mmc/{folder}/{track}.flac'
+            assert m.text(syms['g_play_id3_info'])==path
+            assert m.text(syms['g_play_id3_info']+O['ID3_ALBUM'])==m.files[path][0]
+            m.artwork(); m.ui()
             if variant=='ipod':
-                assert m.nodes[m.albumlabel]['text']=='' and m.nodes[m.art]['image']=='default_album_big'
-        m.tick() # native auto-change, sibling traversal, queue reload, parsing and notification
-        assert m.text(syms['g_play_id3_info'])==path
-        assert m.text(syms['g_play_id3_info']+O['ID3_ALBUM'])==m.files[path][0]
-        assert m.text(syms['g_play_cover_info']+8)==path
-        assert m.text(syms['g_lastcover_url'])==old # worker has not completed yet
-        m.ui()
-        if variant=='ipod':
-            assert m.nodes[m.albumlabel]['text']==m.files[path][0]
-            assert m.nodes[m.art]['image']=='default_album_big'
-        m.artwork()
-        assert m.text(syms['g_lastcover_url'])==path
-        assert m.u.mem_read(syms['g_playcover_finishflag'],1)==b'\1'
-        m.ui()
-        want='file:///tmp/coverpic.jpg' if m.files[path][1] else 'default_album_big'
-        assert m.nodes[m.cover]['image']==(want if m.files[path][1] else 'play_defaultcover'),(path,m.nodes[m.cover])
-        assert m.nodes[m.songlabel]['text']==path.rsplit('/',1)[1]
-        if variant=='ipod':
-            assert m.nodes[m.art]['image']==want
-            assert m.nodes[m.poslabel]['text']==f"{m.mcl('MCL_POS')+1} of {len(m.names())}"
-        queue=m.items(m.get(syms['mcl_pdeqplaylist']))
-        assert all(not m.get(r+O['REC_ALBUM']) for r in queue) # tags came from parsing, not library rows
-        assert ('tags',path) in m.trace and ('decoder_start',path) in m.trace
-        passed()
-    assert [path for event,path in m.trace if event=='directory']==['/mnt/mmc','/mnt/mmc/1','/mnt/mmc','/mnt/mmc/2','/mnt/mmc','/mnt/mmc/3']
-    events=[event for event,_ in m.trace]
-    for event in ('on_player_autochange','toolsLoadNextDir','player_refresh_playqueue'): assert events.count(event)==3
-    assert events.count('mclLoadPlayList')==4 and events.count('mclClearChangeFlag')==len(paths)-1
+                assert m.nodes[m.albumlabel]['text']==m.files[path][0]
+                assert m.nodes[m.poslabel]['text']==f'{track+1} of {n}'
+            queue=m.get(syms['mcl_pdeqplaylist']); records=m.items(queue)[:]
+            m.byte(0xa3be55,0) # hciplayer EOF
+            m.tick()
+            if track+1==n:
+                starts=sum(event=='decoder_start' for event,_ in m.trace)
+                for _ in range(3): m.tick()
+                assert m.get(syms['mcl_pdeqplaylist'])==queue and m.items(queue)==records
+                assert m.mcl('MCL_POS')==track
+                assert not m.text(syms['g_play_id3_info']) # scheduler clears stopped metadata
+                assert sum(event=='decoder_start' for event,_ in m.trace)==starts
+                assert m.get(0xa3beac)==1 # mclStop's stopped state
+            passed()
+    assert not [event for event,_ in m.trace if event in ('on_player_autochange','toolsLoadNextDir','directory','player_refresh_playqueue')]
 
 # Coverflow depth (docs/internals.md#coverflow-depth): the payload's renderer, run as MIPS, draws
 # byte for byte what the host build of the same source draws (test/coverflow.py checks that
@@ -5462,7 +5510,9 @@ def settings_page(hook,view_name,config={},stock_rows=2):
 
 def scan_confirmation_checks():
     if variant!='ipod': return
-    for prompt in ('msg_actionscan','Scan this library?','msg_btreconnect'):
+    for prompt,usb in (('msg_actionscan',False),('Scan this library?',False),
+                       ('msg_btreconnect',False),('msg_actionscan',True),
+                       ('msg_tfinsert',False),('Card inserted',False)):
         m=Machine(); win=m.top=m.node('dialog','confirminfo_dialog')
         m.word(win+O['W_PARENT'],m.wm); m.word(win+O['W_W'],375); m.word(win+O['W_H'],320)
         buttons=[m.entry(win,208+i*48) for i in range(2)]; m.nodes[win]['children']=buttons
@@ -5470,18 +5520,34 @@ def scan_confirmation_checks():
             m.nodes[button].update(type='button',name=name)
             m.word(button+O['W_W'],375); m.word(button+O['W_H'],48)
         m.translations={'msg_actionscan':'Scan this library?'}
-        ctx=m.alloc(256); m.byte(ctx,1); m.u.mem_write(ctx+8,prompt.encode()+b'\0')
+        # usbmode_exit opens the modal scan prompt before it changes USB mode 2 to 3.
+        if usb: m.byte(syms['g_usblink_status'],2)
+        startup=prompt in ('msg_tfinsert','Card inserted')
+        ctx=m.alloc(0x408); m.byte(ctx,2 if usb or startup else 1)
+        m.u.mem_write(ctx+8,prompt.encode()+b'\0')
+        if startup:
+            # on_wm_timer_dialog puts the card notice first and the scan question second.
+            question='msg_actionscan' if prompt=='msg_tfinsert' else 'Scan this library?'
+            m.u.mem_write(ctx+0x208,question.encode()+b'\0')
         m.call(address=IPOD_HOOKS['dialog_confirminfo_dialog_init'][0],args=(win,ctx,0,0),gap=0)
         assert not m.timers, 'Scan must wait for the selected action'
+        assert m.nodes[buttons[1]]['text']==('Reconnect' if prompt=='msg_btreconnect' else 'Scan music')
         m.paint(win); assert m.selected(win)==1
         m.advance(1000); assert not m.clicks
+        if usb:
+            m.byte(syms['g_usbdet_value'],1)  # reconnecting restores the USB input gate
+            assert m.call(O['KEY_PREV'])==11 and m.selected(win)==1
+            m.call(O['KEY_CENTER']); assert not m.timers and not m.clicks
+            m.byte(syms['g_usbdet_value'],0)
         m.byte(syms['g_volume'],42)
         # Stock's centre-release lockout must not block wheel selection on this prompt.
         m.byte(O['KEY_LOCKOUT'],8)
-        assert m.call(O['KEY_PREV'],gap=0,debounce=True)==11 and m.selected(win)==0
-        assert m.call(O['KEY_PREV'],gap=0,debounce=True)==11 and m.selected(win)==0
-        assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(win)==1
-        assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(win)==1
+        for key,selected in ((O['KEY_PREV'],0),(O['KEY_PREV'],0),
+                             (O['KEY_NEXT'],1),(O['KEY_NEXT'],1)):
+            m.call(key,address=IPOD_HOOKS['on_wm_keydown_before_fun'][0],
+                   event_type=O['EVT_KEY_DOWN_BEFORE'],gap=0,debounce=True)
+            assert m.call(key,event_type=O['EVT_KEY_UP_BEFORE'],gap=0,debounce=True)==11
+            assert m.selected(win)==selected
         for field in ('animating','pressed'):
             setattr(m,field,1)
             assert m.call(O['KEY_PREV'])==11 and m.selected(win)==1
@@ -5491,6 +5557,10 @@ def scan_confirmation_checks():
         m.byte(syms['g_backlight_status'],1)
         assert m.u.mem_read(syms['g_volume'],1)==b'*' and not m.moved()
         assert m.confirm()==11 and m.clicks==[buttons[1]]; passed()
+        if usb: assert m.u.mem_read(syms['g_usblink_status'],1)==b'\2'
+        if startup:
+            assert m.call(O['KEY_PREV'])==11 and m.selected(win)==0
+            assert m.confirm()==11 and m.clicks==[buttons[1],buttons[0]]
     # Centre can also confirm Cancel, without scanning or changing volume.
     m=Machine(); win=m.top=m.node('dialog','confirminfo_dialog')
     m.word(win+O['W_PARENT'],m.wm); m.word(win+O['W_W'],375); m.word(win+O['W_H'],320)
@@ -5722,7 +5792,7 @@ for state in (0, 1, 2):
         assert any(c[0]=='getFormatString' and m.text(c[1])=='msg_poweroff' for c in m.calls)
     assert m.u.mem_read(syms['g_poweroff_state'],1)==bytes([state]); passed()
 
-m,rows,texts,icons,click=settings_page('audioset','scroll_view_playset',stock_rows=15)
+m,rows,texts,icons,click=settings_page('audioset','scroll_view_playset',stock_rows=14)
 assert len(rows)==1 and icons==['playset_folderjump'] and texts()==['Artists: Artist']
 assert click(0)==[(1,'PLAYSET','ARTISTTYPE')] and m.get(syms['artist_type'])==1 and texts()==['Artists: Album Artist']
 assert click(0)==[(0,'PLAYSET','ARTISTTYPE')] and m.get(syms['artist_type'])==0; passed()

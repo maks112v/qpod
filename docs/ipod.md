@@ -420,15 +420,15 @@ position thumb and a small Seek label between the times. Playback mode uses cent
 and separate mirrored chevrons at the band's ends, without brackets, a decorative panel or extra
 animation. The artwork and metadata stay in place. The wheel selects the four existing modes;
 double-click locking and native touch seeking are unchanged.
-The top row retains Favourite and More; the redundant mode button is hidden, disabled and moved
+The top row retains Favourite. More is hidden and moved off-screen; holding Centre opens its menu
+through the retained stock callback. The redundant mode button is hidden, disabled and moved
 off-screen, but remains allocated for stock's mode-icon updates by name.
 
 The art, title, artist and album are the slide_view's first page, so a swipe replaces all of them
 with the stock lyrics or info page. Those keep their stock 225-pixel column, centred: stock creates
 each lyric line 225 pixels wide. The big play/pause icon stays centred on the art and the loading
 spinner moves with it. The on-screen Return icon moves off-screen, as on the pages whose navbars are
-hidden; the hardware Return does the same. Favourite and More keep their stock
-images and handlers in the top row.
+hidden; the hardware Return does the same. Favourite keeps its stock image and handler in the top row.
 
 The bar is a plain-colour capsule (radius half its height, track and fill): a `#1C1C1C` track
 (`TRACK_COLOR`) and a fill in the accent's light tone (Graphite `#6E6E6E`, 3.3:1; see [Display settings](#display-settings)), with no thumb.
@@ -487,6 +487,10 @@ Centre or a tap. Known prompts name the action; unknown prompts use Continue. Th
 optional checkbox and result callbacks remain intact. Tidal's confirm keeps its stock look. Audited choice rows have transparent backgrounds so native
 buttons cannot cover the selection bar.
 
+The scan prompt after USB disconnect accepts the wheel and Centre while stock's modal USB exit
+still holds USB mode active. Reconnecting the cable restores the USB input gate.
+The two-line startup prompt uses the same Cancel / Scan music choices, with Scan music selected.
+
 | Button surface | Choices |
 | --- | --- |
 | `confirminfo_dialog` | Cancel, named action |
@@ -506,8 +510,8 @@ controls brightness. Toasts and information dialogs without choices remain outsi
 
 ## Boot
 
-The iPod build starts on Home with the remembered queue and track restored paused; In-Vehicle mode
-keeps the stock start on Now Playing. See [internals.md](internals.md#boot-resume-ipod).
+Both builds start on Home with the remembered queue and track restored paused, including
+In-Vehicle mode. Press Play/Pause to start playback. See [internals.md](internals.md#boot-resume).
 
 ## Display settings
 

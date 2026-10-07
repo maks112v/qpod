@@ -363,13 +363,12 @@ def playing_page(root):
     # Stock still updates this widget by name; mode selection lives in the bottom control now.
     named['img_playmode'][1][0] = -200
     named['img_playmode'][2].update(visible='false', enable='false')
-    for i, name in enumerate(['img_fav', 'img_more']):
-        n = named[name]
-        n[1] = [NP_ICONS_END - (2 - i) * NP_ICON, 0, NP_ICON, NP_TOP]
-        n[2] = {k: v for k, v in n[2].items() if not k.endswith(('_offset', 'text_align_h'))}
-        if 'image' in n[2]:
-            n[2]['draw_type'] = 'center'
-    buttons[3].append(['label', [NP_POS_X, 0, NP_ICONS_END - 2 * NP_ICON - NP_POS_X, NP_TOP], {
+    favourite = named['img_fav']
+    favourite[1] = [NP_ICONS_END - NP_ICON, 0, NP_ICON, NP_TOP]
+    favourite[2] = {k: v for k, v in favourite[2].items() if not k.endswith(('_offset', 'text_align_h'))}
+    if 'image' in favourite[2]:
+        favourite[2]['draw_type'] = 'center'
+    buttons[3].append(['label', [NP_POS_X, 0, NP_ICONS_END - NP_ICON - NP_POS_X, NP_TOP], {
         'name': 'label_ipod_pos', 'style:normal:font_size': '16', 'style:normal:text_color': NP_GREY,
         'style:normal:text_align_h': 'left'}, []])
 
@@ -618,6 +617,13 @@ def patch_asset(path, data, ipod):
         return encode(root)
     if path == ARTIST_PAGE:
         artist_tabs(root)
+    if path == PLAYING_PAGE:
+        # Centre hold dispatches the stock menu callback through this hidden widget.
+        more = next((n for n in walk(root) if n[2].get('name') == 'img_more'), None)
+        require(more is not None, 'Now Playing has no More callback widget')
+        more[1][0] = -200
+        more[2]['visible'] = 'false'
+
     whole = ({HOME_PAGE: ipod_home, STATUS_BAR: status_bar, PLAYING_PAGE: playing_page, QUICK_SETTINGS: quick_settings,
               CONFIRM: confirm_dialog, VOLUME: volume_dialog} if ipod else {HOME_PAGE: home_card})
     if path in whole:
@@ -718,7 +724,4 @@ def patch_code(data, symbols):
     # iPod settings rows: the list_view layouter's layout slot (data, vtable 0x926928 + 8).
     word(inc('LIST_VIEW_LAYOUT_SLOT'), inc('LIST_VIEW_LAYOUT'), symbols['ipod_list_layout'],
          'settings lists stack SET_ROW rows and map their children')
-    # home_page_init's memory-play resume opens Now Playing; outside car mode it runs the page's player_start alone.
-    word(0x523de0, 0x0320f809, 0x0c000000 | (symbols['ringnav_boot'] >> 2),
-         'boot resume restores the queue paused and stays on Home')
     return changes

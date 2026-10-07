@@ -48,6 +48,7 @@ HOOKS = {
     'home_page_init': (0x523c84, 'coverflow_home'),
     'localmusic_page_init': (0x524424, 'ringnav_localmusic'),
     'playermore_page_init': (0x528c14, 'ringnav_playermore'),
+    'playlist_rows': (0x4b2dac, 'ringnav_playlist_rows'),
     # Library lists: an Unknown row with no songs is dropped
     'load_localclass_list': (0x5088cc, 'ringnav_localclass'),
     # The three songtable writers; Coverflow keeps its album list until one runs.
@@ -87,7 +88,7 @@ TRAMPOLINES = {'keyup': 'on_wm_keyup_before_fun', 'touch': 'on_wm_tsdown_before_
                'about': 'systemset_about_page_init', 'folder': 'folder_page_init', 'folder_back': 'folder_back',
                'input': 'window_manager_dispatch_input_event', 'buzzer': 'buzzeer_switch',
                'power': 'systemset_powermanager_page_init', 'audioset': 'playset_playset_page_init',
-               'playermore': 'playermore_page_init'}
+               'playermore': 'playermore_page_init', 'playlist_rows': 'playlist_rows'}
 # Every audited stock PIC prologue resolves this GOT base.
 GP = 0xa26cc0
 # iPod: style_get_gradient has no PIC prologue. It is a leaf that null-checks the style and its
@@ -138,6 +139,16 @@ WATCHDOG_SLEEP = (b'\tsleep 2\n', b'\tsleep 10\n')
 RTC_WRITE = (b'hwclock -w\0\0', b'hwclock -wu\0')
 # mclNextSong's shuffle pick; the payload calls the stock pick, then applies a pending Play next.
 SHUFFLE_CALL = (0x5addf0, 0x0411e8cb)  # bal mcl_shuffle_pick; its delay slot (a0=1) stays
+# List play ends at the queue boundary, even with Jump folder enabled. mclNextSong
+# branches straight to its existing mclStop path instead of loading the next directory.
+ALBUM_STOP = (0x5add50, 0x1462000f, 0x1000000f)
+# Jump folder is the final Audio settings row (ID 14). Stop before building it;
+# its firmware setter/getter stay callable for stock startup but always keep it off.
+JUMP_FOLDER_REMOVE = (
+    (0x4b9ef8, 0x2402000f, 0x2402000e),  # build the other 14 Audio settings rows
+    (0x5ac344, 0x9042be53, 0x00001021),  # mclGetJumpFolder: return 0
+    (0x5ac35c, 0xa044be53, 0xa040be53),  # mclSetJumpFolder: store 0
+)
 # The bal toolsTrimLeft on each name copy in the two library name comparators (0x5b9d40, 0x5ba658, the
 # Chinese and other-language sorts); they become jal ringnav_sort_key, which also drops a leading article.
 SORT_TRIMS = (0x5b9e38, 0x5b9ea4, 0x5ba750, 0x5ba7bc)
@@ -405,6 +416,7 @@ FUNCTIONS = {
  # Coverflow's Sort: another ORDER BY over getAllAlbum's grouping, filled by its own row callback
  'toolsQueryDbTable': ('int', 'const char *, const char *, void *, int'),  # db, sql, row, name sort
  'album_row': ('int', 'void *, int, char **, char **'),
+ 'playlist_create': ('int', 'void *, void *'),
 }
 # Local stock routines in the SHA-256-pinned V1.32 executable.
 PRIVATE_FUNCTIONS = {
@@ -414,6 +426,8 @@ PRIVATE_FUNCTIONS = {
     "mcl_shuffle_pick": 0x5a8120,
     "album_row": 0x4fc324,  # getAllAlbum's sqlite3_exec callback: id, album, songer, fileurl to a record
     "folder_refresh": 0x52176c,  # folder_page's navbar and table from p_deque_showlist (its init, back)
+    "playlist_rows": 0x4b2dac,  # playlist page's init and foreground rebuild
+    "playlist_create": 0x4b1a88,  # stock navbar Create: opens addplaylist_dialog unless adding is busy
 }
 GLOBALS = ['g_backlight_status', 'g_lockscreen_pageflag', 'g_testmode_flag',
            'g_guideflag', 'g_poweroff_state', 'g_usblink_status', 'bt__recv_pageflag',
@@ -422,7 +436,7 @@ GLOBALS = ['g_backlight_status', 'g_lockscreen_pageflag', 'g_testmode_flag',
            'g_po_status', 'g_bal_status',  # 3.5 mm and 4.4 mm jacks: 1 plugged (check_headset_status)
            'g_usbvol_mode',  # USB DAC volume: 0 fixed, else the volume (config_usbvolmode, device_set_volume)
            'g_usbdac_chargeflag']  # USB mode's charge choice, which switch_charge_enable gets there
-GLOBALS += ['g_lightness', 'g_bootvolume', 'g_bootvol_flag']
+GLOBALS += ['g_lightness', 'g_bootvolume', 'g_bootvol_flag', 'g_usbdet_value']
 # Audited stock browsing state, deque pointers, art locks, the status bar widget
 # (system_bar_init stores it), the playing cover's track path and the playing track's tags as
 # player_get_id3info parsed them; sizes are checked against the ELF.
@@ -543,7 +557,7 @@ def build(zip_path, out, logo, ipod=False, dev=False, build_number=None):
     # Every allowlisted context must be a window name. The runtime name is the root "name"
     # property of the UI asset, not the asset path, so check the stock rootfs assets directly:
     # a prefix-trimmed typo cannot silently disable a screen this way.
-    from ipod import (AUDIT, ARTIST_ALBUMS, ARTIST_PAGE, HOME_PAGE, SETTINGS_ICONS, inc, UI_ASSETS, patch_asset,
+    from ipod import (AUDIT, ARTIST_ALBUMS, ARTIST_PAGE, HOME_PAGE, PLAYING_PAGE, SETTINGS_ICONS, inc, UI_ASSETS, patch_asset,
                       imagemagick, patch_code, patch_style, patch_word, settings_icon)
     contexts = re.findall(r'"([^"]+)"', (ROOT/'patch/contexts.inc').read_text())
     check(contexts, 'No navigation contexts audited')
@@ -616,7 +630,12 @@ def build(zip_path, out, logo, ipod=False, dev=False, build_number=None):
         patch_word(patched, address, old, new, 'artist detail opens on Albums')
     patch_word(patched, *SHUFFLE_CALL, 0x0c000000 | (ps['ringnav_shuffle'] >> 2),
                'shuffle honours Play next')
+    patch_word(patched, *ALBUM_STOP, 'stop after the album instead of jumping folders')
+    for address, old, new in JUMP_FOLDER_REMOVE:
+        patch_word(patched, address, old, new, 'remove Jump folder')
     patch_word(patched, *DROP_CACHES, 'keep the page cache')
+    patch_word(patched, 0x523de0, 0x0320f809, 0x0c000000 | (ps['ringnav_boot'] >> 2),
+               'boot restores playback paused, including In-Vehicle mode')
     for index, row_id in enumerate(SYSTEM_SETTINGS_ORDER):
         patch_word(patched, SYSTEM_SETTINGS_TABLE + 4 * index, index, row_id,
                    'System settings order')
@@ -708,7 +727,7 @@ def build(zip_path, out, logo, ipod=False, dev=False, build_number=None):
         removed.append(line.group().split()[:6])
         p = p[:line.start()]+p[line.end():]
     changed_assets = {}
-    assets = ['ui/'+rel for rel in (UI_ASSETS if ipod else [ARTIST_PAGE, HOME_PAGE])] + ['strings/en_US.bin']
+    assets = ['ui/'+rel for rel in (UI_ASSETS if ipod else [ARTIST_PAGE, HOME_PAGE, PLAYING_PAGE])] + ['strings/en_US.bin']
     if ipod:
         assets += ['styles/'+rel for rel in AUDIT['styles']]
         # settings icons pre-sized to the rows' SET_ICON, in place, so each keeps its inode metadata

@@ -970,8 +970,8 @@ void *queue_now(unsigned *pos, unsigned *n) {
 }
 
 /* r's REC_ALBUM or REC_ARTIST as the player parsed it from the file, once it has parsed r's;
- * else the record's own. The records of the next folder, which stock queues when a folder play
- * ends (on_player_autochange), carry no tags (issue #7). */
+ * else the record's own. Folder-play records may carry no tags, so use the player's parsed
+ * tags once they are available (issue #7). */
 const char *now_tag(void *r, int field) {
     if (!r) return (void *)0;
     if (!tk_strcmp((const char *)g_play_id3_info, P(r, REC_PATH)))

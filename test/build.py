@@ -63,7 +63,7 @@ boot_check()
 
 def validate_assets(directory):
     import functools, json, re, struct, subprocess
-    from build import sha, run, fileoff, symbols, BLUEALSA, AAC_44K1, IPOD_HOOKS, IPOD_LEAF, WM_PAINT_LEAF, HELPER, HELPER_LIKE, BOOT, BOOT_HOOK, S90PLAY, RTC_WRITE, WATCHDOG, WATCHDOG_SLEEP, DROP_CACHES, WHEEL_THRESHOLDS, SYSTEM_SETTINGS_TABLE, PDR
+    from build import sha, run, fileoff, symbols, BLUEALSA, AAC_44K1, IPOD_HOOKS, IPOD_LEAF, WM_PAINT_LEAF, HELPER, HELPER_LIKE, BOOT, BOOT_HOOK, S90PLAY, RTC_WRITE, WATCHDOG, WATCHDOG_SLEEP, DROP_CACHES, ALBUM_STOP, JUMP_FOLDER_REMOVE, WHEEL_THRESHOLDS, SYSTEM_SETTINGS_TABLE, PDR
     from ipod import (AUDIT, BOTTOM, CHEVRON_W, CONFIRM, VOLUME, QUICK_SETTINGS, QS_TOP, QS_LABEL_GAP, QS_LABEL_H,
                       QS_LABEL_W, QS_ROW_GAP, QS_PITCH, QS_BAR, QS_TOUCH, QS_EDGE, QS_SUN, HOME_LABEL_END, HOME_LIST_W, HOME_TEXT_X, HOME_TOP, PITCH, ARTIST_PAGE, HOME_PAGE, HOME_ROW, HOME_ROWS, NAVBAR_ONLY, PLAYING_PAGE, SET_ROW, SET_ROWS, SET_TOP, UI_ASSETS,
                       NP_BAR, NP_TOP, STATUS_BAR, STATUS_HIDDEN, STATUS_LEFT, STATUS_MARGIN, STATUS_RIGHT, CLOCK_MIN, corner_inset, corner_x,
@@ -100,7 +100,7 @@ def validate_assets(directory):
     assert demo[off:off+8] == (0x08000000 | symbols(directory/'patch.elf')[WM_PAINT_LEAF[2]] >> 2).to_bytes(4, 'little') + bytes(4)
     changed = manifest['changed_assets']
     xx = 'release/assets/default/raw/images/xx/'
-    assert set(changed) == {'release/assets/default/raw/ui/'+p for p in (UI_ASSETS if ipod else [ARTIST_PAGE, HOME_PAGE])} | {
+    assert set(changed) == {'release/assets/default/raw/ui/'+p for p in (UI_ASSETS if ipod else [ARTIST_PAGE, HOME_PAGE, PLAYING_PAGE])} | {
         'release/assets/default/raw/styles/'+p for p in (AUDIT['styles'] if ipod else [])} | {
         xx+n for n in (SETTINGS_ICONS if ipod else [])} | {'release/assets/default/raw/strings/en_US.bin'}
     def read(image, rel):
@@ -144,6 +144,11 @@ def validate_assets(directory):
     assert new == old.replace(*WATCHDOG_SLEEP) and new != old
     off = fileoff(stock, DROP_CACHES[0])
     assert struct.unpack_from('<I', stock, off)[0] == DROP_CACHES[1] and struct.unpack_from('<I', demo, off)[0] == DROP_CACHES[2]
+    off = fileoff(stock, ALBUM_STOP[0])
+    assert struct.unpack_from('<I', stock, off)[0] == ALBUM_STOP[1] and struct.unpack_from('<I', demo, off)[0] == ALBUM_STOP[2]
+    for address, old, new in JUMP_FOLDER_REMOVE:
+        off = fileoff(stock, address)
+        assert struct.unpack_from('<I', stock, off)[0] == old and struct.unpack_from('<I', demo, off)[0] == new
     off = fileoff(stock, SYSTEM_SETTINGS_TABLE)
     assert struct.unpack_from('<12I', stock, off) == tuple(range(12))
     assert struct.unpack_from('<12I', demo, off) == (1, 3, 4, 8, 7, 2, 6, 5, 0, 9, 11, 10)
@@ -357,8 +362,15 @@ def validate_assets(directory):
             assert pct[1][2] == inc('BATT_PCT_W') and pct[2]['visible'] == 'false' and pct[2]['style:normal:text_align_h'] == 'right' and pct[2]['style:normal:font_size'] == str(inc('BATT_PCT_PX'))
             assert slot == ['view', [0, 0, inc('BATT_BODY_W') + inc('BATT_NUB_W'), 0], {'name': 'view_battery', 'visible': 'false'}, []]
             continue
-        if short == PLAYING_PAGE:  # iPod only: see the sketch in docs/ipod.md
+        if short == PLAYING_PAGE:
             named = {n[2].get('name'): n for n in walk(root)}
+            assert named['img_more'][1][0] < 0 and named['img_more'][2]['visible'] == 'false'
+            if not ipod:
+                plain = decode(original)
+                more = next(n for n in walk(plain) if n[2].get('name') == 'img_more')
+                more[1][0] = -200; more[2]['visible'] = 'false'
+                assert root == plain
+                continue
             assert {n[2].get('name') for n in walk(decode(original))} < set(named)  # stock names kept
             assert [n[2].get('name') for n in root[3]] == ['view_buttons', 'label_playtime', 'label_playlen', 'label_ipod_remain',
                                                            'slide_view_view', 'slider_play', 'img_repeata', 'img_repeatb', 'image_wait', 'label_ipod_control']
@@ -368,8 +380,7 @@ def validate_assets(directory):
             assert control[2]['style:normal:text_align_h'] == 'center' and control[2]['style:normal:text_align_v'] == 'middle'
             pos = named['label_ipod_pos'][1]
             assert pos[0] + pos[2] == named['img_fav'][1][0] and named['img_return'][1][0] < 0
-            icons = [named[n][1] for n in ('img_fav', 'img_more')]
-            assert [g[1:] for g in icons] == [[0, 50, 40]]*2 and icons[1][0] - icons[0][0] == 50
+            assert named['img_fav'][1][1:] == [0, 50, 40]
             assert named['img_playmode'][1][0] < 0 and named['img_playmode'][2]['visible'] == 'false'
             assert named['img_playmode'][2]['enable'] == 'false'
             album = named['view_album'][3]
