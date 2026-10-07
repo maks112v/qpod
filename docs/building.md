@@ -32,9 +32,21 @@ python3 test/patch.py /tmp/q2-build  # after: pip install -r requirements.txt
 
 Both variants replace the stock equalizer page with a 30-band PEQ editor (bands, shelves, preamp, on/off, presets, `/EQ` import) and patch `hciplayer`'s equalizer filter with the matching DSP. Both also clear the 44.1 kHz AAC capability bit in `bluealsa` (see [internals.md](internals.md#bluetooth-aac)).
 
-The updater compares `firmware_v20.info`'s version with demo's one version literal and refuses only an identical one (`update_firmware`, `0x4f8440`; the online check `check_otginfo`, `0x4f8968`). So both carry a 5-character build tag, `V<version>S` (Stock) or `V<version>I` (iPod): the mod installs over stock and over any other build, and stock V1.32 installs back over it. About's **FW. Version** row reads the same literal, so `ringnav_about` shows the stock firmware's version there (`STOCK_VERSION`, from the stock `firmware_v20.info`) and adds a **CFW. Version** row below it, `V<version> iPod` or `V<version> Stock`.
+The updater compares `firmware_v20.info`'s version with demo's one version literal and requires the version to contain `V` and refuses an identical one (`update_firmware`, `0x4f8440`; the online check `check_otginfo`, `0x4f8968`). So both carry a 5-character build tag, `V<version>S` (Stock) or `V<version>I` (iPod): the mod installs over stock and over any other build, and stock V1.32 installs back over it. About's **FW. Version** row reads the same literal, so `ringnav_about` shows the stock firmware's version there (`STOCK_VERSION`, from the stock `firmware_v20.info`) and adds a **CFW. Version** row below it, `V<version> iPod` or `V<version> Stock`.
 
-`--dev` tags a build with the release tag in lowercase (`V<version>s`/`V<version>i`, and `dev` after the CFW. Version row's edition), so a test unit is distinguishable from the release and the updater installs the release over it. It applies to that build only: the release procedure never passes `--dev`, and the manifest records `dev: true`.
+`scripts/build` builds iPod firmware into `dist/update.tar` and automatically increments a persistent development build number in the ignored `.build-number` file. You can pass a stock ZIP path, or let it select the newest ZIP in `firmware/`. `--dev` on the Python builder uses the same counter. About shows, for example, `V8.7 iPod dev 1`; the manifest records `release_version`, `build_number` and `dev`. Failed builds consume a number. Keep the counter to avoid reusing an installed build's identity.
+
+Development updater tags encode the number in three base-36 digits, for example `V001i`, `V002i`, through `VZZZi`, with `s` for Stock. This fits the stock five-character allocation, retains the `V` required by the updater, and differs from release tags. The counter does not reset on a production build and refuses to wrap after 46,655 builds.
+
+Run `scripts/build --prod` to increment `VERSION`'s minor component in `tools/build.py` and build production iPod firmware. For example, `8.7` becomes `8.8`. A failed production build restores the previous version. This creates a local artifact; publishing still follows [releasing.md](releasing.md) and requires a changelog entry. Production versions too long for `V<version>I/S`, such as `8.10`, use `V` plus three base-36 digits encoding `major * 100 + minor` plus the edition. About always shows the readable version. Minor versions are limited to 99 in that encoding.
+
+```sh
+scripts/build
+scripts/build --prod
+scripts/build --prod 'firmware/Q2 Firmware V1.32.zip'
+python3 test/version.py
+python3 test/updater-version.py /path/to/stock-demo  # stock updater version-format gate
+```
 
 The suite executes the actual patched MIPS payload and stock key/touch filters. Coverflow's depth renderer also runs as MIPS and must draw byte for byte what the host build of the same source draws; the suite prints its instruction count per frame, which is a relative measure only, not a frame time. UI services are mocked; carousel checks execute native animator parameter writes and stock completion, with a deterministic animation scheduler, and audit the stock creation path. Separate scenarios execute the stock canvas clip/color/rectangle code and the stock rounded fill/stroke entry points down to mocked LCD and vgcanvas sinks. The iPod wheel scenarios deliver each tick as the pair stock posts, key-down-before through the hook and the stock callback and then key-up-before, leave the stock latches as stock does, and count Key Tone clicks as the `system()` commands the real `buzzeer_switch` issues, the one mocked boundary; the stock binary runs the same presses for comparison. Case coverage lives in `test/patch.py`.
 

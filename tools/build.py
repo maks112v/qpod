@@ -3,14 +3,37 @@
 
 --logo swaps the boot splash JPEG (320x375); it defaults to assets/boot-logo.jpg.
 """
-import argparse, hashlib, io, json, pathlib, re, shlex, struct, subprocess, tarfile, zipfile
+import argparse, fcntl, hashlib, io, json, pathlib, re, shlex, struct, subprocess, sys, tarfile, zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ZIP_SHA = '154c17822d09be001be35c03d2d3488424dee195221790bd70864480d55b0f00'
 DEMO_SHA = '2c5f06142850b4fc168f82b44a81550cce0a5b4b9fe1c179dced4a08a3049138'
 VERSION = '8.7'
 # The updater's identity (firmware_v20.info and demo's version literal), 5 characters; About shows
 # the stock firmware version and a CFW. Version row with the edition instead (ringnav_about).
-VERSIONS = {'stock': f'V{VERSION}S', 'ipod': f'V{VERSION}I'}
+def base36(number):
+    digits = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    result = ''
+    while number:
+        number, digit = divmod(number, 36)
+        result = digits[digit] + result
+    return result or '0'
+
+def version_tag(release, variant, build_number=None):
+    """Keep updater identities five characters long and retain the required V prefix."""
+    edition = 'I' if variant == 'ipod' else 'S'
+    if build_number is not None:
+        if not 1 <= build_number < 36**3:
+            raise ValueError('Development build number must be between 1 and 46655')
+        return 'V' + base36(build_number).zfill(3) + edition.lower()
+    tag = f'V{release}{edition}'
+    if len(tag) == 5:
+        return tag
+    major, minor = map(int, release.split('.'))
+    if not (0 <= minor < 100 and 0 <= major * 100 + minor < 36**3):
+        raise ValueError('Release version exceeds the five-character updater tag capacity')
+    return 'V' + base36(major * 100 + minor).zfill(3) + edition
+
+VERSIONS = {variant: version_tag(VERSION, variant) for variant in ('stock', 'ipod')}
 BASE = 0xb00000
 SCRATCH = 0xb40000
 RING_STEP = 48
@@ -47,6 +70,7 @@ HOOKS = {
 IPOD_HOOKS = {'widget_on_paint_background': (0x65c77c, 'ringnav_paint_bg'),
               'playing_page_init': (0x52ca88, 'ringnav_playing'),
               'systemset_display_page_init': (0x4c1d04, 'ringnav_display'),
+              'dialog_confirminfo_dialog_init': (0x4989ec, 'ringnav_confirm_dialog'),
               'style_get_color': (0x649f6c, 'ringnav_style_color'),
               'image_manager_add': (0x6445d4, 'ringnav_image_add'),
               'on_wm_keydown_before_fun': (0x4e8424, 'ringnav_keydown')}
@@ -56,6 +80,7 @@ TRAMPOLINES = {'keyup': 'on_wm_keyup_before_fun', 'touch': 'on_wm_tsdown_before_
                'home': 'home_page_init', 'localmusic': 'localmusic_page_init', 'localclass': 'load_localclass_list',
                'paint_bg': 'widget_on_paint_background', 'playing': 'playing_page_init',
                'display': 'systemset_display_page_init', 'color': 'style_get_color', 'image': 'image_manager_add',
+               'confirm_dialog': 'dialog_confirminfo_dialog_init',
                'keydown': 'on_wm_keydown_before_fun', 'scan_all': 'scanAllMusicFile', 'scan_folder': 'scanSpecFolder',
                'delete_song': 'deleteMusicFromMusicDb', 'sleep': 'main_loop_sleep_default',
                'about': 'systemset_about_page_init', 'folder': 'folder_page_init', 'folder_back': 'folder_back',
@@ -196,6 +221,9 @@ FUNCTIONS = {
  'widget_set_opacity': ('int', 'void *, unsigned'),
  'widget_set_enable': ('int', 'void *, int'),
  'widget_set_text_utf8': ('int', 'void *, const char *'),
+ 'widget_set_text': ('int', 'void *, const unsigned *'),
+ 'locale_info': ('void *', 'void'),
+ 'locale_info_tr': ('const char *', 'void *, const char *'),
  'widget_use_style': ('int', 'void *, const char *'),
  'widget_set_name': ('int', 'void *, const char *'),
  'widget_set_sensitive': ('int', 'void *, int'),
@@ -357,6 +385,7 @@ FUNCTIONS = {
  'folder_refresh': ('int', 'void *'),
  # Videos (books.c): stop the music, the DAC's power, and the screen and standby timeouts held off
  'mclGetOutputWay': ('int', 'void'),
+ 'mclGetBalance': ('int', 'void'),
  'mclGetLyricSize': ('int', 'void'),  # the playing track's lyric lines, 0 without
  'mclGetPlayStatus': ('int', 'void'),  # 1 stopped, 2 playing, 3 paused (mclStop, mclSetResume, mclSetPause)
  'player_stop': ('int', 'void'),
@@ -385,6 +414,7 @@ GLOBALS = ['g_backlight_status', 'g_lockscreen_pageflag', 'g_testmode_flag',
            'g_po_status', 'g_bal_status',  # 3.5 mm and 4.4 mm jacks: 1 plugged (check_headset_status)
            'g_usbvol_mode',  # USB DAC volume: 0 fixed, else the volume (config_usbvolmode, device_set_volume)
            'g_usbdac_chargeflag']  # USB mode's charge choice, which switch_charge_enable gets there
+GLOBALS += ['g_lightness', 'g_bootvolume', 'g_bootvol_flag']
 # Audited stock browsing state, deque pointers, art locks, the status bar widget
 # (system_bar_init stores it), the playing cover's track path and the playing track's tags as
 # player_get_id3info parsed them; sizes are checked against the ELF.
@@ -396,9 +426,10 @@ CONTEXT_DATA = {'g_folder_path': 1024, 'g_class_type': 4,
                 'g_play_id3_info': 2716,
                 # Artists' source (PLAYSET ARTISTTYPE, the artist page's switch: 1 album artist);
                 # the battery level (0-100) and the charger's state (1, 2 charging), get_battery_capacity's
-                'artist_type': 4, 'g_power_capacity': 4, 'g_power_chargestate': 4}
+                'pdeq_btshowlist': 4, 'artist_type': 4, 'g_power_capacity': 4, 'g_power_chargestate': 4}
 # Windows the payload creates at runtime (window_create), so no rootfs asset names them.
-PAYLOAD_WINDOWS = {'coverflow_page', 'photos_page', 'books_page', 'mostplayed_page'}
+PAYLOAD_WINDOWS = {'coverflow_page', 'photos_page', 'books_page', 'mostplayed_page',
+                   'libraryhistory_page', 'librarytools_page', 'btremove_page'}
 ICONS = ['menu_coverflow.png', 'menu_coverflowdown.png']
 # The stock EQ preset page and the images only it and the stock equalizer page show: the PEQ
 # editor clears that page's widgets on init and never binds the preset button, so none can load.
@@ -474,11 +505,12 @@ def patch_watchdog(raw):
     check(sha(raw) == WATCHDOG_SHA, 'Unsupported watchdog script')
     return raw.replace(*WATCHDOG_SLEEP)
 
-def build(zip_path, out, logo, ipod=False, dev=False):
+def build(zip_path, out, logo, ipod=False, dev=False, build_number=None):
     variant = 'ipod' if ipod else 'stock'
-    version = VERSIONS[variant]
-    # --dev: lowercase tag, never equal to a release, so the updater accepts either over the other
-    if dev: version = version[:-1] + version[-1].lower()
+    check(dev == (build_number is not None), 'Development builds require a build number')
+    version = version_tag(VERSION, variant, build_number)
+    display_version = f'V{VERSION} {"iPod" if ipod else "Stock"}'
+    if dev: display_version += f' dev {build_number}'
     out.mkdir(parents=True, exist_ok=True)
     check(not (out/'update.tar').exists(), 'Output already exists; use a fresh --out directory')
     source = source_sha256()
@@ -538,7 +570,7 @@ def build(zip_path, out, logo, ipod=False, dev=False):
     names = ''.join(n.removesuffix('.png') + '\\0' for n in SETTINGS_ICONS)
     header.append(f'#define SETTINGS_ICON_NAMES "{names}"')
     # About: the stock firmware's version on its own row, and this build's on the CFW. Version row.
-    header += [f'#define STOCK_VERSION "{info[1]}"', f'#define Q2POD_VERSION "V{VERSION} {"iPod" if ipod else "Stock"}{" dev" * dev}"']
+    header += [f'#define STOCK_VERSION "{info[1]}"', f'#define Q2POD_VERSION "{display_version}"']
     (out/'stock.h').write_text('\n'.join(header)+'\n')
     ps = compile_payload(out, ipod)
     payload = (out/'patch.bin').read_bytes()
@@ -710,7 +742,7 @@ def build(zip_path, out, logo, ipod=False, dev=False):
         demo_sha256=sha(patched), patch_sha256=sha(payload), update_sha256=sha((out/'update.tar').read_bytes()),
         rootfs_sha256=sha(newsq.read_bytes()), kernel_sha256=sha(blobs['recovery-update/xImage']),
         patch_bytes=len(payload), ring_step_pixels=RING_STEP,
-        version=version, variant=variant, dev=dev, peq=audio, bluealsa_sha256=sha(bluealsa), q2video_sha256=sha((out/'q2video').read_bytes()), q2boot_sha256=sha((out/'q2boot').read_bytes()), compact_code=code_changes, changed_assets=changed_assets, logo_sha256=sha(logo_data),
+        version=version, release_version=VERSION, build_number=build_number, variant=variant, dev=dev, peq=audio, bluealsa_sha256=sha(bluealsa), q2video_sha256=sha((out/'q2video').read_bytes()), q2boot_sha256=sha((out/'q2boot').read_bytes()), compact_code=code_changes, changed_assets=changed_assets, logo_sha256=sha(logo_data),
         patch_symbols={n:hex(v) for n,v in ps.items() if n.startswith('stock_')},
         tools={t:run(t,'--version').splitlines()[0] for t in ['clang','ld.lld','llvm-objcopy']} |
               ({'imagemagick': imagemagick('-version', data=b'').decode().splitlines()[0]} if ipod else {}))
@@ -724,10 +756,45 @@ if __name__ == '__main__':
     ap.add_argument('--logo',type=pathlib.Path,default=ROOT/'assets/boot-logo.jpg',
                     help='320x375 JPEG boot splash (default: assets/boot-logo.jpg)')
     ap.add_argument('--ipod', action='store_true', help='iPod UI: compact local browsing and long Return to Now Playing')
-    ap.add_argument('--dev', action='store_true',
-                    help=f'development build: lowercase version tag (V{VERSION}s/i); never a release input')
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument('--dev', action='store_true', help='development build: increment the local build number')
+    mode.add_argument('--prod', action='store_true', help='production build: increment VERSION’s minor component')
     a=ap.parse_args()
     try:
-        build(a.zip,a.out.resolve(),a.logo,a.ipod,a.dev)
+        # Serialize local numbering and version bumps, including concurrent script invocations.
+        if a.dev or a.prod:
+            with (ROOT/'.build-number').open('a+') as counter:
+                fcntl.flock(counter, fcntl.LOCK_EX)
+                # A previous process may have bumped the version while we waited for the lock.
+                path = ROOT/'tools/build.py'
+                original = path.read_text()
+                VERSION = re.search(r"^VERSION = '([0-9]+\.[0-9]+)'$", original, re.M)[1]
+                if a.prod:
+                    major, minor = map(int, VERSION.split('.'))
+                    next_version = f'{major}.{minor + 1}'
+                    version_tag(next_version, 'ipod' if a.ipod else 'stock')
+                    updated = original.replace(f"VERSION = '{VERSION}'", f"VERSION = '{next_version}'", 1)
+                    check(updated != original, 'Could not update VERSION')
+                    path.write_text(updated)
+                    try:
+                        subprocess.run([sys.executable, str(path), str(a.zip),
+                                        '--out', str(a.out.resolve()), '--logo', str(a.logo),
+                                        *(['--ipod'] if a.ipod else [])], check=True)
+                    except BaseException:
+                        path.write_text(original)
+                        raise
+                else:
+                    counter.seek(0)
+                    previous = counter.read().strip()
+                    number = int(previous or '0') + 1
+                    version_tag(VERSION, 'ipod' if a.ipod else 'stock', number)
+                    # Reserve before building. Failed builds consume a number instead of reusing it.
+                    counter.seek(0)
+                    counter.truncate()
+                    counter.write(f'{number}\n')
+                    counter.flush()
+                    build(a.zip, a.out.resolve(), a.logo, a.ipod, True, number)
+        else:
+            build(a.zip, a.out.resolve(), a.logo, a.ipod)
     except (OSError, ValueError, zipfile.BadZipFile, subprocess.CalledProcessError) as exc:
         ap.error(str(exc))

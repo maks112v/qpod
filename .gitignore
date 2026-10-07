@@ -9,3 +9,6 @@ firmware/
 *.squashfs
 
 __pycache__/
+
+# Persistent local development build counter
+.build-number

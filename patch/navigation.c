@@ -12,7 +12,7 @@ extern int stock_keyup_trampoline(void *, void *), stock_touch_trampoline(void *
     stock_folder_trampoline(void *, void *), stock_folder_back_trampoline(void *, void *),
     stock_input_trampoline(void *, void *), stock_buzzer_trampoline(int),
     stock_localclass_trampoline(int), stock_power_trampoline(void *, void *),
-    stock_audioset_trampoline(void *, void *);
+    stock_audioset_trampoline(void *, void *), stock_confirm_dialog_trampoline(void *, void *);
 extern void *coverflow_tracks(void *page);
 extern void *coverflow_album(void *page), *coverflow_album_tracks(void *r);
 extern unsigned coverflow_scope(void *page);
@@ -35,6 +35,8 @@ extern const char *track_name(char *buf, unsigned size, void *t);
 #define GLIDE_MS 300
 #define SCROLL_MARGIN 12
 #define DOUBLE_CLICK_MS 200
+/* Wake has no delayed single-click action; allow for human timing and the dark UI loop. */
+#define WAKE_DOUBLE_CLICK_MS 500
 #define NP_SEEK_STEP 5
 #define NP_SEEK_MS 250
 #define HOME_FAST_WINDOW_MS 200
@@ -127,6 +129,9 @@ typedef struct {
     void *pod_label[4];
     unsigned charge_at, last_input, cpu_retry;
 #if IPOD
+    unsigned editor_timer;
+    void *editor_page;
+    unsigned library_page_generation;
     void *pull_page, *pull_surface;
     void *sel_w; /* the surface whose selection was last drawn: its row and centre, for Home's > */
     int sel_row, sel_y;
@@ -368,6 +373,10 @@ static void drop_spin(void) {
 /* Input that is not navigation here: no pending confirmation and no run survive it. */
 static void drop_input(void) {
     cancel_center();
+#if IPOD
+    stop_timer(&st.editor_timer);
+    st.editor_page = (void *)0;
+#endif
     drop_spin();
     st.unlock_waiting = 0;
 }
@@ -1506,12 +1515,59 @@ static void *list_button(void *view) {
 static void *list_row(void *view, const char *icon, int (*click)(void *, void *), void *ctx) {
     void *button = list_button(view);
     widget_on(button, EVT_CLICK, click, ctx);
-    image_base_set_image(image_create(button, 10, 0, SET_STOCK_ICON, 70), icon);
-    void *label = hscroll_label_create(button, 72, 0, 260, 70);
+    if (icon) image_base_set_image(image_create(button, 10, 0, SET_STOCK_ICON, 70), icon);
+    void *label = hscroll_label_create(button, icon ? 72 : 10, 0, icon ? 260 : 322, 70);
     widget_use_style(label, "s_scrlabel_white24l");
     set_hscroll_label_attribute(label);
     return label;
 }
+
+#if IPOD
+/* Current values share one right column. Stock labels keep their identities and callbacks. */
+static void setting_pair_layout(void *title, void *value) {
+    void *button = P(title, W_PARENT);
+    int x = I(title, W_X), h = I(button, W_H), edge = I(button, W_W) - SET_EDGE;
+    widget_move_resize(title, x, 0, edge - 120 - 12 - x, h);
+    widget_move_resize(value, edge - 120, 0, 120, h);
+    prop(title, "style:normal:font_size", 20);
+    prop(value, "style:normal:font_size", 16);
+    widget_set_prop_str(value, "style:normal:text_align_h", "right");
+    for (unsigned j = 0; j < widget_count_children(button); j++) {
+        void *c = widget_get_child(button, j);
+        if (!tk_strcmp(widget_get_type(c), "image") &&
+            !tk_strcmp(widget_get_prop_str(c, "image", ""), "list_into"))
+            widget_set_visible(c, 0, 0);
+    }
+}
+
+static void setting_pair(void *title, const char *caption, const char *current) {
+    if (!title) return;
+    void *button = P(title, W_PARENT);
+    void *value = (void *)(unsigned)widget_get_prop_int(title, "_setting_value", 0);
+    if (!value) {
+        value = hscroll_label_create(button, 176, 0, 159, 70);
+        if (!value) return;
+        widget_use_style(value, "s_scrlabel_white20r");
+        set_hscroll_label_attribute(value);
+        prop(title, "_setting_value", (int)value);
+    }
+    widget_set_text_utf8(title, caption);
+    widget_set_text_utf8(value, current);
+    if (I(button, W_W) == 375) setting_pair_layout(title, value);
+}
+
+/* The payload's settings used to put both parts in one label, e.g. "Wake: Double click". */
+static void setting_pair_text(void *label, const char *s) {
+    char caption[64];
+    unsigned n = 0;
+    while (s[n] && s[n] != ':' && n < sizeof caption - 1) { caption[n] = s[n]; ++n; }
+    caption[n] = 0;
+    if (s[n] != ':') return;
+    s += n + 1;
+    while (*s == ' ') ++s;
+    setting_pair(label, caption, s);
+}
+#endif
 
 /* Power management's Charge limit, Low power and Wake use Q2POD CHARGELIMIT, LOWPOWER and
  * SINGLEWAKE in config.ini. Audio settings' Artists uses stock's own
@@ -1537,7 +1593,11 @@ static void pod_text(int i) {
             : i == POD_LOW  ? st.low_power
             : i == POD_WAKE ? st.single_wake
                             : I(artist_type, 0) == 1;
+#if IPOD
+    setting_pair_text(st.pod_label[i], names[i][v]);
+#else
     widget_set_text_utf8(st.pod_label[i], names[i][v]);
+#endif
 }
 /* Centre or tap toggles and saves. Wake takes effect immediately; Charge limit and Low power on
  * the next UI loop pass (power_poll); Artists on the next load of an artist list. */
@@ -2032,7 +2092,10 @@ static void vol_paint(void *top, void *canvas) {
  * the top window or the bar (at least each second, systembar_showface) keeps the bar's clock,
  * Home's art and Now Playing's labels current; Home's art is also checked when Home is painted
  * under another window. */
+static void settings_summary(void *win);
+
 int ringnav_paint_bg(void *w, void *canvas) {
+    settings_summary(w);
     int result = stock_paint_bg_trampoline(w, canvas);
     void *wm = window_manager(), *bar = *(void *const *)system_bar;
     paint_selection(w, canvas);
@@ -2168,7 +2231,7 @@ static void setting_text(int i) {
         "Battery: Icon", "Battery: Percent", "Battery: Icon + Percent"
     };
     const char *const names[] = { accent_names[accent()], home[st.home_full], battery[st.battery] };
-    widget_set_text_utf8(st.setting_label[i], names[i]);
+    setting_pair_text(st.setting_label[i], names[i]);
 }
 
 /* Centre or tap cycles the row's value and saves it. A new accent reaches the payload's drawing on
@@ -2209,6 +2272,59 @@ int ringnav_display(void *win, void *ctx) {
         st.setting_label[i] = list_row(view, icons[i], setting_click, (void *)(long)i);
         setting_text(i);
     }
+    return result;
+}
+
+static int confirm_auto_closed(void *win, void *event) {
+    (void)event;
+    unsigned timer = (unsigned)widget_get_prop_int(win, "_confirm_auto", 0);
+    if (timer) timer_remove(timer);
+    return 0;
+}
+
+static int confirm_auto(const void *info) {
+    void *win = P(info, 0x20);
+    prop(win, "_confirm_auto", 0);
+    if (usable() && window_manager_get_top_window(window_manager()) == win) {
+        void *button = widget_lookup(win, "img_enter", 1);
+        if (button) {
+            char click[0x30];
+            stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 0, 0));
+        }
+    }
+    return 0;
+}
+
+/* Stock retains the prompt, optional delete-source checkbox and result callbacks. Only exact
+ * translated prompt matches name the action; unknown confirmations keep a neutral Continue. */
+int ringnav_confirm_dialog(void *win, void *ctx) {
+    int result = stock_confirm_dialog_trampoline(win, ctx);
+    if (!win || !ctx || result) return result;
+    static const struct { const char *key, *action; int harmless; } actions[] = {
+        { "msg_delplaylist", "Delete playlist", 0 }, { "msg_delsong", "Delete song", 0 },
+        { "msg_delfile", "Delete file", 0 }, { "msg_delalbum", "Delete album", 0 },
+        { "msg_delartist", "Delete artist", 0 }, { "msg_delgenre", "Delete genre", 0 },
+        { "msg_delete_task", "Delete download", 0 }, { "msg_poweroff", "Shut down", 0 },
+        { "msg_confirmupdate", "Install update", 0 }, { "msg_wificancelsave", "Forget network", 0 },
+        { "msg_wifidisconnect", "Disconnect", 0 }, { "msg_unpairing", "Unpair device", 0 },
+        { "msg_exitairplay", "Quit AirPlay", 0 }, { "msg_lowarn", "Enable line out", 0 },
+        { "msg_exportplaylist", "Export playlist", 0 }, { "msg_importplaylist", "Import playlist", 0 },
+        { "msg_actionscan", "Scan music", 1 }, { "msg_btreconnect", "Reconnect", 1 },
+    };
+    const char *prompt = (const char *)ctx + 8, *action = "Continue";
+    int harmless = 0;
+    for (unsigned i = 0; i < sizeof actions / sizeof *actions; ++i) {
+        const char *translated = locale_info_tr(locale_info(), actions[i].key);
+        if (!tk_strcmp(prompt, actions[i].key) || (translated && !tk_strcmp(prompt, translated))) {
+            action = actions[i].action;
+            harmless = actions[i].harmless && B(ctx, 0) == 1;
+            break;
+        }
+    }
+    widget_set_text_utf8(widget_lookup(win, "img_cancel", 1), "Cancel");
+    widget_set_text_utf8(widget_lookup(win, "img_enter", 1), action);
+    if (harmless && widget_on(win, EVT_DESTROY, confirm_auto_closed, win))
+        prop(win, "_confirm_auto", (int)timer_add(confirm_auto, win, 0));
     return result;
 }
 #else
@@ -2266,6 +2382,17 @@ static int selects(menu_t *m, void *target) {
 
 /* Observe actual clicks BEFORE app callbacks can navigate or destroy/rebind their widgets.
  * Do not turn pointer-down into selection: a swipe is not a tap. */
+#if IPOD
+static int bluetooth_device(void *button) {
+    for (unsigned i = 0; button && i < widget_count_children(button); ++i) {
+        void *c = widget_get_child(button, i);
+        if (!tk_strcmp(widget_get_type(c), "image") &&
+            !tk_strcmp(widget_get_prop_str(c, "image", ""), "bt_lefticon")) return 1;
+    }
+    return 0;
+}
+#endif
+
 int ringnav_dispatch(void *target, void *event) {
 #if IPOD
     if (st.pull_page && (!event || !pull_live() || I(event, EVENT_TYPE) == EVT_KEY_DOWN_BEFORE))
@@ -2297,6 +2424,20 @@ int ringnav_dispatch(void *target, void *event) {
             }
         }
     }
+#if IPOD
+    /* Stock interprets clicks at x >= 276 as unpair. Device rows now only connect. */
+    if (target && event && I(event, EVENT_TYPE) == EVT_CLICK) {
+        void *owner = window_of(target);
+        if (owner && !tk_strcmp(widget_get_prop_str(owner, "name", ""), "bluetooth_page")) {
+            void *button = target;
+            while (button && button != owner && !bluetooth_device(button)) button = P(button, W_PARENT);
+            if (button && button != owner) {
+                char click[0x30];
+                return stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 0, 0));
+            }
+        }
+    }
+#endif
     return stock_dispatch_trampoline(target, event);
 }
 
@@ -2414,6 +2555,31 @@ static void set_row(void *item) {
         for (unsigned j = 0; j < n; ++j)
             set_child(widget_get_child(b, j), row_w, row_h,
                       row_w - SET_EDGE - 50 - SET_STOCK_X - trail);
+        void *labels[2];
+        unsigned found = 0;
+        for (unsigned j = 0; j < n; ++j) {
+            void *c = widget_get_child(b, j);
+            const char *type = widget_get_type(c);
+            if (!tk_strcmp(type, "label") || !tk_strcmp(type, "hscroll_label")) {
+                if (found < 2) labels[found] = c;
+                ++found;
+            }
+        }
+        if (bluetooth_device(b)) {
+            for (unsigned j = 0; j < n; ++j) {
+                void *c = widget_get_child(b, j);
+                const char *image = widget_get_prop_str(c, "image", "");
+                if (!tk_strcmp(image, "navbar_delete")) widget_set_visible(c, 0, 0);
+                if (!tk_strcmp(image, "bt_lefticon")) {
+                    image_set_draw_type(c, IMAGE_DRAW_SCALE_DOWN);
+                    widget_move_resize(c, SET_ICON_X, (row_h - SET_ICON) / 2, SET_ICON, SET_ICON);
+                }
+            }
+            for (unsigned j = 0; j < found && j < 2; ++j)
+                widget_move_resize(labels[j], SET_ICON_X + SET_ICON + SET_GAP, found == 2 ? (j ? 40 : 12) : 24,
+                                   row_w - SET_TEXT_X - SET_ICON_X - SET_ICON - SET_GAP, j ? 16 : 20);
+        } else if (found == 2 && I(labels[0], W_H) == row_h && I(labels[1], W_H) == row_h)
+            setting_pair_layout(labels[0], labels[1]);
     }
 }
 
@@ -2421,7 +2587,10 @@ static void set_row(void *item) {
  * the iPod settings pages) gets settings rows: items stock made SET_STOCK_ROW high take SET_ROW
  * before the stock layout stacks them and sizes the scroll view, then each row is mapped. Settings
  * code never moves, resizes or scrolls its rows afterwards (docs/ipod.md#settings). */
+static void bluetooth_remove_option(void *view);
+
 int ipod_list_layout(void *layout, void *view) {
+    bluetooth_remove_option(view);
     void *list = view ? P(view, W_PARENT) : (void *)0;
     int rows = list && !tk_strcmp(widget_get_type(list), "list_view") && !I(list, ROW_HEIGHT) &&
                I(list, LIST_DEFAULT_ITEM_HEIGHT) == SET_ROW;
@@ -2433,6 +2602,158 @@ int ipod_list_layout(void *layout, void *view) {
     int ret = ((int (*)(void *, void *))LIST_VIEW_LAYOUT)(layout, view);
     for (unsigned i = 0; i < n; ++i) set_row(widget_get_child(view, i));
     return ret;
+}
+
+/* Resolve current stock rows by device address. Scans can rebuild them while this screen is open. */
+static void *bluetooth_view(void) {
+    void *owner = widget_lookup(window_manager(), "bluetooth_page", 0);
+    return owner ? widget_lookup(owner, "scroll_view_bluetooth", 1) : (void *)0;
+}
+
+static const char *bluetooth_address(void *button) {
+    const char *name = widget_get_prop_str(button, "name", "");
+    if (!*name) return (void *)0;
+    unsigned index = 0;
+    for (const char *s = name; *s; ++s) {
+        if (*s < '0' || *s > '9') return (void *)0;
+        index = index * 10 + *s - '0';
+    }
+    void *devices = P(pdeq_btshowlist, 0);
+    return devices && index < deque_size(devices) ? (const char *)deque_at(devices, index) + 4 : (void *)0;
+}
+
+static int bluetooth_paired(void *button) {
+    if (!bluetooth_device(button)) return 0;
+    for (unsigned i = 0; i < widget_count_children(button); ++i)
+        if (!tk_strcmp(widget_get_prop_str(widget_get_child(button, i), "image", ""), "navbar_delete")) return 1;
+    return 0;
+}
+
+static void bluetooth_remove_refresh(void *page);
+
+static int bluetooth_remove_pick(void *item, void *event) {
+    (void)event;
+    void *page = window_of(item), *view = bluetooth_view();
+    const char *address = widget_get_prop_str(item, "_bt_address", "");
+    for (unsigned i = 0; view && i < widget_count_children(view); ++i) {
+        void *button = widget_get_child(widget_get_child(view, i), 0);
+        const char *current = bluetooth_paired(button) ? bluetooth_address(button) : (void *)0;
+        if (current && !tk_strcmp(address, current)) {
+            char click[0x30];
+            /* Stock retains its confirmation, busy checks, disconnect and persistence. */
+            stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 300, 0));
+            break;
+        }
+    }
+    bluetooth_remove_refresh(page);
+    return 0;
+}
+
+static int bluetooth_remove_closed(void *ctx, void *event) { (void)ctx; (void)event; return 0; }
+static int bluetooth_remove_key(void *ctx, void *event) {
+    (void)ctx;
+    if (I(event, EVENT_KEY) != KEY_RETURN) return 0;
+    window_close(window_manager_get_top_window(window_manager()));
+    return STOP;
+}
+
+static void bluetooth_remove_refresh(void *page) {
+    void *source = bluetooth_view();
+    unsigned count = 0;
+    for (unsigned i = 0; source && i < widget_count_children(source); ++i)
+        count += bluetooth_paired(widget_get_child(widget_get_child(source, i), 0));
+    void *view = page_list(page, page, 0, count ? "Remove devices" : "No paired devices", count, 48);
+    unsigned row = 0;
+    for (unsigned i = 0; source && i < widget_count_children(source); ++i) {
+        void *button = widget_get_child(widget_get_child(source, i), 0);
+        const char *address = bluetooth_paired(button) ? bluetooth_address(button) : (void *)0;
+        if (!address) continue;
+        void *item = list_item_create(view, 0, row++ * 48, 375, 48);
+        widget_use_style(item, "s_listitem_black");
+        void *label = hscroll_label_create(item, 30, 0, 285, 48);
+        widget_use_style(label, "s_scrlabel_white20l");
+        set_hscroll_label_attribute(label);
+        for (unsigned j = 0; j < widget_count_children(button); ++j) {
+            void *c = widget_get_child(button, j);
+            if (!tk_strcmp(widget_get_type(c), "hscroll_label")) {
+                widget_set_text(label, widget_get_text(c));
+                break;
+            }
+        }
+        widget_set_prop_str(item, "_bt_address", address);
+        widget_on(item, EVT_CLICK, bluetooth_remove_pick, item);
+    }
+}
+
+static int bluetooth_remove_open(void *ctx, void *event) {
+    (void)ctx; (void)event;
+    if (widget_lookup(window_manager(), "btremove_page", 0)) return 0;
+    void *page = page_open("btremove_page", bluetooth_remove_closed, bluetooth_remove_key);
+    if (page) bluetooth_remove_refresh(page);
+    return 0;
+}
+
+static void bluetooth_remove_option(void *view) {
+    if (!view || tk_strcmp(widget_get_prop_str(view, "name", ""), "scroll_view_bluetooth")) return;
+    if (widget_lookup(view, "bt_remove_devices", 1)) return;
+    void *label = list_row(view, (void *)0, bluetooth_remove_open, (void *)0);
+    widget_set_name(P(label, W_PARENT), "bt_remove_devices");
+    widget_set_text_utf8(label, "Remove devices");
+}
+
+/* Menu summaries use the live values, so returning from an editor never shows the old setting. */
+static void settings_summary(void *win) {
+    if (!win) return;
+    const char *name = widget_get_prop_str(win, "name", "");
+    const char *view_name = !tk_strcmp(name, "display_page") ? "scroll_view_display"
+                            : !tk_strcmp(name, "playset_page") ? "scroll_view_playset" : (void *)0;
+    if (!view_name) return;
+    void *view = widget_lookup(win, view_name, 1);
+    for (unsigned i = 0; view && i < widget_count_children(view); ++i) {
+        void *row = widget_get_child(view, i);
+        void *b = widget_get_child(row, 0), *title = (void *)0, *value = (void *)0;
+        const char *icon = "";
+        for (unsigned j = 0; b && j < widget_count_children(b); ++j) {
+            void *c = widget_get_child(b, j);
+            const char *type = widget_get_type(c);
+            if (!tk_strcmp(type, "image") && I(c, W_X) < 100)
+                icon = widget_get_prop_str(c, "image", "");
+            if (!tk_strcmp(type, "hscroll_label") || !tk_strcmp(type, "label")) {
+                if (!title) title = c;
+                else value = c;
+            }
+        }
+        char s[32];
+        const char *caption = (void *)0;
+        int current = 0;
+        if (!tk_strcmp(icon, "display_backlight")) {
+            caption = "Brightness";
+            current = g_lightness;
+            tk_snprintf(s, sizeof s, "%u%%", g_lightness);
+        } else if (!tk_strcmp(icon, "playset_maxvol")) {
+            caption = "Max volume";
+            current = g_maxvolume;
+            tk_snprintf(s, sizeof s, "%u", g_maxvolume);
+        } else if (!tk_strcmp(icon, "playset_bootvol")) {
+            caption = "Startup volume";
+            current = g_bootvolume | (g_bootvol_flag << 8);
+            tk_snprintf(s, sizeof s, g_bootvol_flag ? "%u" : "Last used", g_bootvolume);
+        } else if (!tk_strcmp(icon, "playset_balance")) {
+            caption = "Balance";
+            int balance = mclGetBalance();
+            current = balance;
+            tk_snprintf(s, sizeof s, !balance ? "Center" : balance < 0 ? "Left %d" : "Right %d",
+                        balance < 0 ? -balance : balance);
+        }
+        if (caption && title) {
+            if (widget_get_prop_int(title, "_summary_ready", 0) &&
+                widget_get_prop_int(title, "_summary_value", 0) == current) continue;
+            if (value) prop(title, "_setting_value", (int)value);
+            setting_pair(title, caption, s);
+            prop(title, "_summary_ready", 1);
+            prop(title, "_summary_value", current);
+        }
+    }
 }
 
 /* Called only by stock long Return, after its power/lock gates and release guard. */
@@ -2971,6 +3292,75 @@ enum {
     L_STOCK
 };
 
+#if IPOD
+static void library_stock_key(char *s, int i) { tk_snprintf(s, 32, "_library_stock%d", i); }
+
+static int library_menu_closed(void *ctx, void *event) { (void)ctx; (void)event; return 0; }
+
+static int library_menu_key(void *ctx, void *event) {
+    (void)ctx;
+    if (I(event, EVENT_KEY) == KEY_RETURN) {
+        window_close(window_manager_get_top_window(window_manager()));
+        return STOP;
+    }
+    return 0;
+}
+
+static int library_pick(void *item, void *event) {
+    (void)event;
+    void *page = window_of(item), *wm = window_manager();
+    void *owner = (void *)(unsigned)widget_get_prop_int(page, "_library_owner", 0);
+    /* The native rows stay owned by Library. A stale submenu cannot dispatch a destroyed row. */
+    if (!owner || widget_lookup(wm, "localmusic_page", 0) != owner) return 0;
+    if (widget_get_prop_int(page, "_library_generation", 0) !=
+        widget_get_prop_int(owner, "_library_generation", 0)) return 0;
+    void *target = (void *)(unsigned)widget_get_prop_int(item, "_library_target", 0);
+    if (target) {
+        char click[0x30];
+        stock_dispatch_trampoline(target, pointer_event_init(click, EVT_CLICK, target, 0, 0));
+    }
+    return 0;
+}
+
+static void library_proxy(void *view, int i, const char *caption, void *target) {
+    void *item = list_item_create(view, 0, i * 48, 375, 48);
+    widget_use_style(item, "s_listitem_black");
+    void *label = hscroll_label_create(item, 30, 0, 285, 48);
+    widget_use_style(label, "s_scrlabel_white20l");
+    set_hscroll_label_attribute(label);
+    widget_set_text_utf8(label, caption);
+    prop(item, "_library_target", (int)target);
+    widget_on(item, EVT_CLICK, library_pick, item);
+}
+
+static int library_menu(void *owner, int tools) {
+    const char *name = tools ? "librarytools_page" : "libraryhistory_page";
+    if (widget_lookup(window_manager(), name, 0)) return 0;
+    int upload = widget_get_prop_int(owner, "_library_upload", 0);
+    void *page = page_open(name, library_menu_closed, library_menu_key);
+    if (!page) return 0;
+    prop(page, "_library_owner", (int)owner);
+    prop(page, "_library_generation", widget_get_prop_int(owner, "_library_generation", 0));
+    void *view = page_list(page, page, 0, tools ? "Library tools" : "Listening history",
+                           tools ? 1 + !!upload : 4, 48);
+    static const int rows[] = { L_ADDED, L_RECENT, -1, L_FREQUENT, L_UPDATE };
+    static const char *const captions[] = {
+        "Recently added", "Recently played", "Most played", "Frequent", "Scan music"
+    };
+    for (int i = tools ? 4 : 0; i < (tools ? 5 : 4); i++) {
+        char key[32];
+        library_stock_key(key, rows[i]);
+        void *row = (void *)(unsigned)widget_get_prop_int(owner, rows[i] < 0 ? "_library_most" : key, 0);
+        library_proxy(view, tools ? 0 : i, captions[i], widget_get_child(row, 0));
+    }
+    if (tools && upload) library_proxy(view, 1, "Upload scrobbles", widget_get_child((void *)upload, 0));
+    return 0;
+}
+static int library_history(void *owner, void *event) { (void)event; return library_menu(owner, 0); }
+static int library_tools(void *owner, void *event) { (void)event; return library_menu(owner, 1); }
+static int library_search(void *owner, void *event) { return stock_search(owner, event); }
+#endif
+
 /* The Library: Shuffle Songs, browsing, the user's own lists, listening history, the card's other
  * media, then upkeep. The added rows' buttons have no name, so stock's row click (atoi of the
  * name, 0x5241fc) never sees them. */
@@ -2981,12 +3371,35 @@ int ringnav_localmusic(void *win, void *ctx) {
     void *stock[L_STOCK];
     for (int i = 0; i < L_STOCK; i++) stock[i] = widget_get_child(view, i);
     unsigned n = 0; /* each row moves to n as it comes, so Update Local Music, left, ends last */
+#if IPOD
+    prop(win, "_library_upload", 0);
+    prop(win, "_library_generation", (int)++st.library_page_generation);
+    for (int i = 0; i < L_STOCK; ++i) {
+        char key[32];
+        library_stock_key(key, i);
+        prop(win, key, (int)stock[i]);
+    }
+    static const unsigned char primary[] = { L_ARTISTS, L_ALBUMS, L_SONGS, L_PLAYLISTS, L_FAV, L_GENRES };
+    for (unsigned i = 0; i < sizeof primary; i++) widget_restack(stock[primary[i]], n++);
+    widget_restack(library_row(view, 0, library_search, win, "Search"), n++);
+#endif
     widget_restack(library_row(view, "local_shuffle", shuffle_songs, 0, "Shuffle Songs"), n++);
+#if IPOD
+    void *most = library_row(view, "local_frequentplay", most_played, 0, "Most Played");
+    prop(win, "_library_most", (int)most);
+    widget_set_visible(most, 0, 0);
+    for (unsigned i = 0; i < 4; ++i) {
+        static const unsigned char hidden[] = { L_ADDED, L_RECENT, L_FREQUENT, L_UPDATE };
+        widget_set_visible(stock[hidden[i]], 0, 0);
+    }
+    widget_restack(library_row(view, 0, library_history, win, "Listening history"), n++);
+#else
     static const unsigned char middle[] = { L_ARTISTS,   L_ALBUMS, L_SONGS, L_GENRES,
                                             L_PLAYLISTS, L_FAV,    L_ADDED, L_RECENT };
     for (unsigned i = 0; i < sizeof middle; i++) widget_restack(stock[middle[i]], n++);
     widget_restack(library_row(view, "local_frequentplay", most_played, 0, "Most Played"), n++);
     widget_restack(stock[L_FREQUENT], n++);
+#endif
     widget_restack(stock[L_HIRES], n++);
     /* Podcasts, Audiobooks, Photos, Books and Videos, each only with its folder. */
     static const char *const icons[] = { "local_podcasts", "local_audiobooks", "local_photos",
@@ -2996,9 +3409,18 @@ int ringnav_localmusic(void *win, void *ctx) {
         if (media_find(k + 1, path))
             widget_restack(
                 library_row(view, icons[k], media_click, (void *)(long)(k + 1), MEDIA[k]), n++);
-    if (scrobble_ready())
-        widget_restack(library_row(view, "local_scrobble", upload_scrobbles, 0, "Upload Scrobbles"),
-                       n++);
+    if (scrobble_ready()) {
+        void *upload = library_row(view, "local_scrobble", upload_scrobbles, 0, "Upload Scrobbles");
+#if IPOD
+        prop(win, "_library_upload", (int)upload);
+        widget_set_visible(upload, 0, 0);
+#else
+        widget_restack(upload, n++);
+#endif
+    }
+#if IPOD
+    widget_restack(library_row(view, 0, library_tools, win, "Library tools"), n++);
+#endif
     return result;
 }
 
@@ -3576,15 +3998,59 @@ int ringnav_keydown(void *ctx, void *event) {
 }
 #endif
 
+static int slider_setting(const char *name) {
+    return !tk_strcmp(name, "backlight_page") || !tk_strcmp(name, "maxvol_page") ||
+           !tk_strcmp(name, "bootvol_page") || !tk_strcmp(name, "balance_page");
+}
+
+#if IPOD
+static int editor_closed(void *page, void *event) {
+    (void)event;
+    if (page == st.editor_page) drop_input();
+    return 0;
+}
+
+static int editor_finish(const void *info) {
+    (void)info;
+    void *page = st.editor_page;
+    st.editor_timer = 0;
+    st.editor_page = (void *)0;
+    void *wm = window_manager();
+    if (page && usable() && window_manager_get_top_window(wm) == page &&
+        !window_manager_is_animating(wm) && !window_manager_get_pointer_pressed(wm)) navigator_back();
+    return 0;
+}
+
+static int editor_center(void *page, void *event) {
+    void *wm = window_manager();
+    if (window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm)) {
+        drop_input();
+        return STOP;
+    }
+    if (st.editor_timer && st.editor_page == page) {
+        drop_input();
+        on_wm_keyup_fun(wm, event); /* the stock double-Centre screen-off path */
+        return STOP;
+    }
+    drop_input();
+    if (!widget_get_prop_int(page, "_editor_bound", 0)) {
+        if (!widget_on(page, EVT_DESTROY, editor_closed, page)) return STOP;
+        prop(page, "_editor_bound", 1);
+    }
+    st.editor_page = page;
+    st.editor_timer = timer_add(editor_finish, 0, DOUBLE_CLICK_MS);
+    if (!st.editor_timer) editor_finish(0);
+    return STOP;
+}
+#endif
+
 /* Slider-only settings use their stock +/- actions, including validation and persistence.
  * Quick Settings has no +/- buttons; setting its slider fires the stock value-changed callback. */
 static int settings_wheel(void *top, unsigned key) {
     if (!top || (key != KEY_PREV && key != KEY_NEXT)) return 0;
     const char *name = widget_get_prop_str(top, "name", "");
     int quick = !tk_strcmp(name, "statusbar_dialog");
-    if (!quick && tk_strcmp(name, "backlight_page") && tk_strcmp(name, "maxvol_page") &&
-        tk_strcmp(name, "bootvol_page") && tk_strcmp(name, "balance_page"))
-        return 0;
+    if (!quick && !slider_setting(name)) return 0;
     void *wm = window_manager();
     if (window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm)) return 1;
     if (quick) {
@@ -3600,7 +4066,11 @@ static int settings_wheel(void *top, unsigned key) {
         return 1;
     }
     void *button = widget_lookup(top, key == KEY_NEXT ? "img_add" : "img_dec", 1);
-    if (button && widget_get_visible(button) && widget_get_prop_bool(button, "enable", 1)) {
+    if (button && widget_get_prop_bool(button, "enable", 1)
+#if !IPOD
+        && widget_get_visible(button)
+#endif
+    ) {
         char click[0x30];
         stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 0, 0));
     }
@@ -3627,7 +4097,7 @@ int ringnav(void *ctx, void *event) {
     if (waking_center) {
         pod_settings();
         unsigned now = (unsigned)time_now_ms();
-        if (st.single_wake || (st.unlock_waiting && now - st.unlock_at < DOUBLE_CLICK_MS)) {
+        if (st.single_wake || (st.unlock_waiting && now - st.unlock_at <= WAKE_DOUBLE_CLICK_MS)) {
             st.unlock_waiting = 0;
             if (!g_backlight_status) on_wm_keyup_fun(ctx, event);
             if (g_lockscreen_pageflag) navigator_back(); /* the close callback clears the flag */
@@ -3687,6 +4157,10 @@ int ringnav(void *ctx, void *event) {
         return STOP;
     }
 #if IPOD
+    if (key == KEY_CENTER && top && slider_setting(widget_get_prop_str(top, "name", ""))) {
+        np_cancel();
+        return editor_center(top, event);
+    }
     int playing = st.np_win && top == st.np_win;
     if (st.np_win && top &&
         !tk_strcmp(widget_get_prop_str(top, "name", ""), "volume_dialog")) {

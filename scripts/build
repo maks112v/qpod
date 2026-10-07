@@ -2,7 +2,22 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-firmware_zip="${1:-}"
+firmware_zip=""
+mode="--dev"
+for arg in "$@"; do
+  case "$arg" in
+    --prod) mode="--prod" ;;
+    -h|--help) echo "Usage: scripts/build [--prod] [firmware.zip]"; exit 0 ;;
+    -*) echo "Unknown option: $arg" >&2; exit 1 ;;
+    *)
+      if [[ -n "$firmware_zip" ]]; then
+        echo "Pass only one firmware ZIP path." >&2
+        exit 1
+      fi
+      firmware_zip="$arg"
+      ;;
+  esac
+done
 
 if [[ -z "$firmware_zip" ]]; then
   shopt -s nullglob
@@ -31,7 +46,7 @@ export PATH="/opt/homebrew/opt/binutils/bin:/opt/homebrew/opt/llvm/bin:$PATH"
 python3 "$repo_root/tools/build.py" "$firmware_zip" \
   --out "$build_dir" \
   --ipod \
-  --dev
+  "$mode"
 
 mkdir -p "$repo_root/dist"
 install -m 0644 "$build_dir/update.tar" "$repo_root/dist/update.tar"

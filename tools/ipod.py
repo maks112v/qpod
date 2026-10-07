@@ -472,9 +472,7 @@ def quick_settings(root):
     slider[1], slider[2] = track, props
 
 
-# iPod only. The confirm pair (img_cancel, img_enter; 80px tiles around 60px discs) sits symmetrically,
-# each centred in its half of the screen. The discs themselves are recoloured dark with legible
-# glyphs for every accent by ringnav_image_add (patch/navigation.c).
+# iPod only. Flat labeled actions replace the discs. Stock binds the same names on both widget types.
 CONFIRM = 'dialog/confirminfo_dialog.bin'
 CONFIRM_TILE = 80
 
@@ -482,8 +480,49 @@ CONFIRM_TILE = 80
 def confirm_dialog(root):
     require([n[2].get('name') for n in root[3]] == ['img_cancel', 'img_enter'] and
             all(n[1][2:] == [CONFIRM_TILE, CONFIRM_TILE] for n in root[3]), 'Unexpected confirm dialog')
-    x = (375 // 2 - CONFIRM_TILE) // 2
-    root[3][0][1][0], root[3][1][1][0] = x, 375 - x - CONFIRM_TILE
+    for i, n in enumerate(root[3]):
+        n[0], n[1] = 'button', [0, 208 + i * 48, 375, 48]
+        n[2] = {'name': n[2]['name'], 'focusable': 'false', 'clickable': 'true',
+                'text': 'Cancel' if i == 0 else 'Continue',
+                'style:normal:bg_color': '#00000000', 'style:pressed:bg_color': '#2B2B2B',
+                'style:normal:text_color': '#FFFFFF', 'style:normal:font_size': '20',
+                'style:pressed:text_color': '#FFFFFF', 'style:normal:border_color': '#00000000',
+                'style:normal:text_align_h': 'center', 'style:normal:border_width': '0'}
+
+
+SLIDER_EDITORS = {
+    'systemset/backlight_page.bin': ('Brightness', 'label_backlight', 'slider_backlight'),
+    'playset/maxvol_page.bin': ('Maximum volume', 'label_vol', 'slider_maxvol'),
+    'playset/bootvol_page.bin': ('Startup volume', 'label_vol', 'slider_bootvol'),
+    'playset/balance_page.bin': ('Channel balance', 'label_balance', 'slider_balance'),
+}
+
+
+def slider_editor(root, path):
+    """One wheel/touch editor layout; native widgets and their value callbacks stay allocated."""
+    title, value, slider = SLIDER_EDITORS[path]
+    named = {n[2].get('name'): n for n in walk(root)}
+    body = named[next(n for n in named if n and n.startswith('view_') and n != 'view_navbar')]
+    body[1] = [0, 0, 375, 290]
+    label = named[value]
+    label[1] = [40, 64, 295, 56]
+    for state in ('normal', 'disable', 'focused'):
+        label[2][f'style:{state}:font_size'] = '40'
+    bar = named[slider]
+    bar[1] = [40, 146, 295, 48]
+    bar[2] = plain_slider(bar[2], '#1C1C1C', '#FFFFFF', 8)
+    bar[2].update(dragger_size='48', dragger_adapt_to_icon='false')
+    for n in body[3]:
+        if n[0] == 'image':
+            n[2]['visible'] = 'false'
+    body[3].extend([
+        ['label', [40, 12, 295, 32], {'name': 'label_editor_title', 'text': title,
+          'style:normal:font_size': '20', 'style:normal:text_color': '#FFFFFF',
+          'style:normal:text_align_h': 'center'}, []],
+        ['label', [40, 220, 295, 40], {'name': 'label_editor_done', 'text': 'Centre to finish',
+          'style:normal:font_size': '16', 'style:normal:text_color': '#FFFFFF',
+          'style:normal:text_align_h': 'center'}, []],
+    ])
 
 
 # iPod only. The volume dialog loses its highlight="default(alpha=200)", so the window manager
@@ -594,6 +633,8 @@ def patch_asset(path, data, ipod):
             if kind in ('label', 'hscroll_label') and corner_inset(30 + g[1]):
                 g[2] = min(g[2], 375 - g[0] - corner_x(30 + g[1], 0))
     if path in NAVBAR_ONLY:
+        if path in SLIDER_EDITORS:
+            slider_editor(root, path)
         return encode(root)
 
     def rows(n, in_row=False):

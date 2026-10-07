@@ -6,7 +6,7 @@ import json, math, pathlib, re, struct, sys
 from unicorn import Uc, UcError, UC_ARCH_MIPS, UC_MODE_MIPS32, UC_MODE_LITTLE_ENDIAN, UC_HOOK_CODE, UC_HOOK_BLOCK
 from unicorn.mips_const import *
 import sys; sys.path.insert(0, sys.path[0] + '/../tools')  # tools/ first: test/build.py must import tools/build.py
-from build import segments, symbols, BASE, SCRATCH, HOOKS, IPOD_HOOKS, WM_PAINT_LEAF, FUNCTIONS, GLOBALS, CONTEXT_DATA, ROOT, source_sha256, sha, PRIVATE_FUNCTIONS, VERSIONS, VERSION
+from build import segments, symbols, BASE, SCRATCH, HOOKS, IPOD_HOOKS, WM_PAINT_LEAF, FUNCTIONS, GLOBALS, CONTEXT_DATA, ROOT, source_sha256, sha, PRIVATE_FUNCTIONS, VERSIONS, VERSION, version_tag
 B=pathlib.Path(sys.argv[1] if len(sys.argv)>1 else 'build')
 manifest=json.loads((B/'manifest.json').read_text())
 if manifest.get('source_sha256') != source_sha256():
@@ -16,7 +16,7 @@ for name,key in (('demo','demo_sha256'),('stock-demo','stock_demo_sha256'),('pat
         raise SystemExit(f'{B/name} does not match manifest.json; rebuild into a fresh directory')
 variant = manifest.get('variant')
 v = VERSIONS.get(variant, '')
-assert v and manifest['version'] == (v[:-1] + v[-1].lower() if manifest.get('dev') else v), 'Wrong variant/version'
+assert v and manifest['version'] == version_tag(VERSION, variant, manifest.get('build_number') if manifest.get('dev') else None), 'Wrong variant/version'
 assert (manifest.get('compact_code') != []) == (variant == 'ipod')
 from ipod import INC, O  # patch/offsets.inc and its integer #defines
 DC=int(re.search(r'^#define DOUBLE_CLICK_MS (\d+)$',(ROOT/'patch/navigation.c').read_text(),re.M)[1])  # centre double-press window
@@ -88,6 +88,8 @@ class Machine:
         if patched:
             for name in ('paint','dispatch','paint_bg'):
                 self.handlers[int(manifest['patch_symbols']['stock_'+name+'_trampoline'],16)]='stock_'+name
+            if variant=='ipod':
+                self.handlers[int(manifest['patch_symbols']['stock_confirm_dialog_trampoline'],16)]='stock_confirm_dialog'
         self.mock('reset_poweroptions_timer','screen_action','enable_fb','usleep@GLIBC_2.0','sprintf@GLIBC_2.0',
                   'airplayGetFlag','playpause_quick_click','time@GLIBC_2.0','localtime@GLIBC_2.0',
                   'strlen@GLIBC_2.0','strrchr@GLIBC_2.0','strcasecmp@GLIBC_2.0','strncasecmp@GLIBC_2.0')
@@ -212,6 +214,10 @@ class Machine:
                 a=self.get(a+O['W_PARENT'])
             self.word(b,x); self.word(b+4,y); ret=0
         elif name=='widget_set_text_utf8': n['text']=self.text(b); ret=0
+        elif name=='widget_set_text':
+            chars=[]
+            while self.get(b): chars.append(chr(self.get(b))); b+=4
+            n['text']=''.join(chars); ret=0
         elif name=='image_base_set_image': n['image']=self.text(b); ret=0
         elif name=='widget_use_style': n['style']=self.text(b); ret=0
         elif name.startswith('hscroll_label_set_') or name=='set_hscroll_label_attribute':
@@ -302,11 +308,13 @@ class Machine:
             # Stock text is VALUE_TYPE_WSTRING; value_str does not convert it to UTF-8.
             ret=0 if self.text(b)=='text' else self.string(n.get(self.text(b),''))
         elif name=='widget_get_text': ret=self.wide_string(n.get('text',''))
+        elif name=='locale_info_tr': ret=self.string(getattr(self,'translations',{}).get(self.text(b),self.text(b)))
         elif name in ('widget_get_prop_bool','widget_get_prop_int'): ret=n.get(self.text(b),c)
         elif name=='mclGetLyricSize': ret=getattr(self,'lyric_size',0)
         elif name=='widget_count_children': ret=len(n['children'])
         elif name=='widget_get_child': ret=n['children'][b] if b<len(n['children']) else 0
         elif name=='widget_set_prop_int': n[self.text(b)]=signed(c); ret=0
+        elif name=='widget_set_prop_str': n[self.text(b)]=self.text(c); ret=0
         elif name=='config_playmode': self.word(O['MCL_MODE'],a); ret=0
         elif name=='pointer_event_init':
             self.word(a,b); self.word(a+0x10,c); ret=a
@@ -641,8 +649,18 @@ for config,single in (({},False),({'SINGLEWAKE':'1'},True),({'SINGLEWAKE':'0'},F
             assert m.release(100)==11 and m.screens==[1]
             assert sum(c[0]=='navigator_back' for c in m.calls)==int(locked)
         assert not m.clicks; passed()
+# Wake accepts an ordinary double click, including the screen-off loop's delivery delay.
+# This window is independent of the 200 ms screen-on activation/screen-off gesture.
+for gap in (100,180,200,250,300,400,500):
+    for locked in (False,True):
+        m=Machine(); m.page('poweroff_page' if locked else 'playing_page')
+        m.byte(syms['g_backlight_status'],0); m.byte(syms['g_lockscreen_pageflag'],int(locked))
+        assert m.release()==11 and not m.screens
+        assert m.release(gap)==11 and m.screens==[1], (gap,locked)
+        assert sum(c[0]=='navigator_back' for c in m.calls)==int(locked)
+        assert not m.clicks; passed()
 m=Machine(); m.page('playing_page'); m.byte(syms['g_backlight_status'],0)
-assert m.release()==11 and m.release(DC+1)==11 and not m.screens
+assert m.release()==11 and m.release(501)==11 and not m.screens
 assert m.release(100)==11 and m.screens==[1]; passed()
 for field in ['animating','pressed']:
     m=Machine(); m.page(); setattr(m,field,1); assert m.call()==11 and not m.moved(); passed()
@@ -1331,27 +1349,26 @@ for name in ('searchbox_dialog','tidal_searchbox_dialog'):
     assert m.call()==0 and not m.moved(); passed()
 
 # iPod: a confirm dialog's buttons are its rows (contexts.inc BUTTONS). The wheel moves between the
-# side-by-side buttons without scrolling anything, the bar is the button's own tile, the ends are
+# labeled action rows without scrolling anything, the bar spans the row, the ends are
 # hard and Centre clicks the selected button. The Stock build leaves the dialog stock: the wheel is volume.
 m=Machine(); d=m.node('dialog','confirminfo_dialog'); m.word(d+O['W_PARENT'],m.wm)
 m.word(d+O['W_W'],375); m.word(d+O['W_H'],320); m.clip=(0,0,375,320); m.top=d
-buttons=[m.entry(d,220) for _ in range(2)]; m.nodes[d]['children']=buttons
-pair=(53,242) if variant=='ipod' else (56,240)  # iPod's confirminfo_dialog.bin centres each in its half
-for b,x in zip(buttons,pair): m.word(b+O['W_X'],x); m.word(b+O['W_W'],80); m.word(b+O['W_H'],80)
+buttons=[m.entry(d,208+i*48 if variant=='ipod' else 220) for i in range(2)]; m.nodes[d]['children']=buttons
+for b,x in zip(buttons,(0,0) if variant=='ipod' else (56,240)):
+    m.word(b+O['W_X'],x); m.word(b+O['W_W'],375 if variant=='ipod' else 80); m.word(b+O['W_H'],48 if variant=='ipod' else 80)
 if variant=='ipod':
-    m.paint(d); assert m.selected(d)==0 and m.sel()==(53,220,80,80)
-    # The focused tile is framed in constant white (no accent lookup), over the bar; stroke color restored.
-    assert [s[:4] for s in m.strokes]==[(53,220,80,80),(54,221,78,78)] and {s[5] for s in m.strokes}=={0xffffffff}
+    m.paint(d); assert m.selected(d)==0 and m.sel()==(0,208,375,48)
+    assert not m.strokes
     assert m.lcd_colors()==LCD_COLORS
     assert m.call()==11 and m.selected(d)==1 and not m.moved()
-    m.paint(d); assert m.sel()==(242,220,80,80) and m.clip==(0,0,375,320)
-    assert [s[:4] for s in m.strokes]==[(242,220,80,80),(243,221,78,78)]
+    m.paint(d); assert m.sel()==(0,256,375,48) and m.clip==(0,0,375,320)
+    assert not m.strokes
     assert m.call()==11 and m.selected(d)==1 and not m.moved()
     assert m.call(O['KEY_PREV'])==11 and m.selected(d)==0
     assert m.confirm()==11 and m.dispatched()[0][1]==buttons[0]; passed()
     # A wide button (autoshutdown's Cancel) gets the full-width bar.
     m.nodes[d]['name']='autoshutdown_dialog'; m.nodes[d]['children']=[buttons[0]]; m.word(buttons[0]+O['W_W'],287)
-    m.paint(d); assert m.sel()==(0,220,375,80) and not m.strokes; passed()
+    m.paint(d); assert m.sel()==(0,208,375,48) and not m.strokes; passed()
 else:
     assert m.call()==0 and m.call(O['KEY_CENTER'])==0 and not m.moved(); passed()
 
@@ -1959,7 +1976,10 @@ for backlight in [0,1]:
                 m.byte(syms['g_backlight_status'],backlight)
                 m.byte(syms['g_keylock_flag'],1); m.byte(syms['g_keylock_mode'],mode)
                 results.append(m.call(key))
-            assert results[0]==results[1],(backlight,mode,key,results)
+            if not backlight and key==O['KEY_CENTER']:
+                assert results[1]==11  # default double-click wake consumes the first release
+            else:
+                assert results[0]==results[1],(backlight,mode,key,results)
             passed()
 # Non-ring keys on supported pages must pass through unchanged.
 for key in [0,13,170,O['KEY_PLAY'],222,223,0xffffffff]:
@@ -2633,6 +2653,12 @@ assert m.nodes[m.title]['text']=='Row 0' and m.labels()==SONG_MENU
 assert m.hold()==11 and not any(c[0]=='navigator_to' for c in m.calls) and len(m.stack)==2
 assert m.release()==0
 passed()
+# Return dismisses this menu; keep this check with its fixture before later scenarios replace m.
+f,ctx=m.handler(m.top,O['EVT_KEY_UP']); ev=m.alloc(0x40); m.word(ev,O['EVT_KEY_UP']); m.word(ev+O['EVENT_KEY'],O['KEY_NEXT'])
+assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==0 and m.top!=page
+m.word(ev+O['EVENT_KEY'],O['KEY_RETURN']); assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==11
+assert m.top==page and not m.toasts and m.names()==['A','B','C'] and m.u.mem_read(syms['g_sort_changeflag'],1)==b'\0'
+passed()
 # Centre holds without row actions never enter stock's shutdown confirmation. Their releases
 # are swallowed too, including on Now Playing and when the screen is off or locked.
 for page,flags in (('playing_page',{}),('sysset_page',{}),('home_page',{'g_backlight_status':0}),
@@ -2649,18 +2675,12 @@ for page,flags in (('playing_page',{}),('sysset_page',{}),('home_page',{'g_backl
 m=QueueMachine(); m.press(7000,O['KEY_PLAY'])
 assert m.hold(O['KEY_PLAY'])==11 and m.opened[-1]==('playing_page',0,0,255,2)
 assert m.release(O['KEY_PLAY'])==0 and not m.playback(); passed()
-# Return (the replaced dialog key-up) dismisses without the stock sort flag; other keys pass.
-f,ctx=m.handler(m.top,O['EVT_KEY_UP']); ev=m.alloc(0x40); m.word(ev,O['EVT_KEY_UP']); m.word(ev+O['EVENT_KEY'],O['KEY_NEXT'])
-assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==0 and m.top!=page
-m.word(ev+O['EVENT_KEY'],O['KEY_RETURN']); assert m.call(address=f,args=(ctx,ev,0,0),gap=0)==11
-assert m.top==page and not m.toasts and m.names()==['A','B','C'] and m.u.mem_read(syms['g_sort_changeflag'],1)==b'\0'
-passed()
 # A dropped release leaves a latch that must not eat a later press: the press time differs.
 m=QueueMachine(); m.press(1); assert m.hold()==11
 m.u.mem_write(m.status+O['INPUT_KEYS'],bytes(O['INPUT_KEY_SIZE'])); m.press(2); assert m.release()==0; passed()
 # The hold cancels a pending centre click. Wheel and centre then act on the menu only and the list
 # keeps its selection. Touch and centre arrive as the same click and run once.
-m=QueueMachine(); m.call(); m.call(); assert m.selected(m.surface)==2
+m=QueueMachine(); page=m.top; m.call(); m.call(); assert m.selected(m.surface)==2
 m.call(O['KEY_CENTER']); m.press(100); m.hold(); m.release(); m.advance(300); assert not m.dispatched()
 m.paint(m.view); assert m.call()==11 and m.selected(m.view)==1 and m.selected(m.surface)==2
 assert m.confirm()==11 and m.dispatched()[0][1]==m.nodes[m.view]['children'][1]
@@ -2838,14 +2858,14 @@ if variant=='ipod':
 m=QueueMachine(); m.word(O['MCL_TYPE'],2); assert m.run(0)=='Queue unchanged' and m.names()==['A','B','C']
 m=QueueMachine(); m.press(1); m.hold(); m.release(); m.word(m.row(0)+O['REC_NAME'],m.string('other'))
 m.pick(0); m.advance(0); assert m.toasts[-1][3]=='Queue unchanged' and m.names()==['A','B','C']; passed()
-# Unsupported pages and states keep the stock long key: no menu, and the release is stock.
-for setup,toggles in ((lambda m:m.byte(syms['g_lockscreen_pageflag'],1),1),(lambda m:m.byte(syms['g_backlight_status'],0),1),
-        (lambda m:m.byte(syms['g_navbar_status'],1),1),
-        (lambda m:m.word(m.surface+O['TABLE_ROWS'],7),1),(lambda m:m.word(m.row(0)+O['REC_TYPE'],4),1),
-        (lambda m:setattr(m,'airplay',2),0),
-        (lambda m:setattr(m,'top',m.node('window','home_page',[m.node()])),1)):
+# Unsupported Centre holds do nothing rather than entering stock's shutdown path.
+for setup in (lambda m:m.byte(syms['g_lockscreen_pageflag'],1),lambda m:m.byte(syms['g_backlight_status'],0),
+        lambda m:m.byte(syms['g_navbar_status'],1),
+        lambda m:m.word(m.surface+O['TABLE_ROWS'],7),lambda m:m.word(m.row(0)+O['REC_TYPE'],4),
+        lambda m:setattr(m,'airplay',2),
+        lambda m:setattr(m,'top',m.node('window','home_page',[m.node()]))):
     m=QueueMachine(); setup(m); m.press(3)
-    assert m.hold()==0 and len(m.stack)==1 and m.release()==toggles
+    assert m.hold()==11 and len(m.stack)==1 and m.release()==0
     passed()
 # Unknown rows (docs/internals.md#unknown-rows): stock's list (here the showlist as built, its size
 # returned) keeps its trailing Unknown row (id -1) only when the query its press runs finds a song;
@@ -3583,15 +3603,15 @@ for action,want in ((0,['A','early','late','B','C']),(1,['A','B','C','early','la
     m.open(); m.word(m.slide+O['SLIDE_INDEX'],2)
     m.press(100); assert m.hold()==11 and m.release()==0
     assert m.nodes[m.title]['text']=='Album 2' and m.labels()==['Play next','Add to queue','Shuffle','Go to artist']
-    assert m.hold()==0
+    assert m.hold()==11
     m.pick(action); m.pick(action); m.advance(0)
     assert m.names()==want and not m.playback() and not m.plays and m.top==m.page
     assert m.query[:2]==('getMusicByAlbum','Album 2') and m.names(m.get(syms['tools_pdeq_directory']))==['staged']; passed()
 for index in (3,4):
     m=CoverflowMachine(); m.open(); m.word(m.slide+O['SLIDE_INDEX'],index)
-    m.press(100); assert m.hold()==0 and m.top==m.page; passed()
+    m.press(100); assert m.hold()==11 and m.top==m.page; passed()
 for kwargs in ({'albums':0},{'cached':False}):
-    m=CoverflowMachine(**kwargs); m.open(); m.press(100); assert m.hold()==0; passed()
+    m=CoverflowMachine(**kwargs); m.open(); m.press(100); assert m.hold()==11; passed()
 for invalidate in ('selection','closed','tracks'):
     m=CoverflowMachine(); m.open(); m.press(100); assert m.hold()==11; m.release()
     if invalidate=='selection': m.word(m.slide+O['SLIDE_INDEX'],1)
@@ -3602,7 +3622,7 @@ for invalidate in ('selection','closed','tracks'):
 m=CoverflowMachine(); m.open(); m.tracks(2); m.key(); m.word(m.slide+O['SLIDE_INDEX'],1)
 assert m.run(2) is None and m.plays[-1][2] in (0,1) and m.plays[-1][3:]==(1,2) and m.play_names==['T1','T2']; passed()
 # Sorting leaves the utility card selected; the next album hold follows the reordered deque.
-m=CoverflowMachine(); m.word(m.albums[2]+O['REC_ARTIST'],m.string('Aardvark')); m.open(); m.tracks(3); m.slide=m.find('slide_menu'); m.press(100); assert m.hold()==0
+m=CoverflowMachine(); m.word(m.albums[2]+O['REC_ARTIST'],m.string('Aardvark')); m.open(); m.tracks(3); m.slide=m.find('slide_menu'); m.press(100); assert m.hold()==11
 m.word(m.slide+O['SLIDE_INDEX'],0); m.press(101); assert m.hold()==11
 assert m.nodes[m.title]['text']=='Album 2'; m.release(); m.pick(1); m.advance(0)
 assert m.query[:2]==('getMusicByAlbum','Album 2'); passed()
@@ -3623,11 +3643,12 @@ for action,want in ((0,['A','T2','B','C']),(1,['A','B','C','T2'])):
     m.call(); assert m.selected(view)==1
     m.press(100); assert m.hold()==11 and m.nodes[m.title]['text']=='T2' and m.release()==0
     assert m.labels()==['Play next','Add to queue','Add to Favourites','Go to artist']
-    assert m.hold()==0  # a repeated hold while the dialog is open cannot open another
+    assert m.hold()==11  # a repeated hold while the dialog is open cannot open another
     m.pick(action); m.pick(action); m.advance(0)
     assert m.names()==want and m.top==m.page and m.selected(view)==1 and not m.playback() and not m.plays
     assert m.names(m.get(syms['p_deque_showlist']))==['Row 0','Row 1','Row 2','Row 3']
-    m.press(200); assert m.release()==1; passed()
+    m.press(200); before=len(m.clicks); assert m.release()==0
+    m.advance(DC); assert m.clicks[before:]==[m.nodes[view]['children'][1]]; passed()
 # Its favourite is batch-select's over Coverflow's own deque, its songs taken as All Songs rows.
 m=CoverflowMachine(cls=O['CLASS_ALBUMS']); m.open(); view=m.tracks(); assert m.run(2)=='Added to Favourites'
 assert [c[1:3] for c in m.calls if c[0]=='batch_add_file']==[(0xf001,0xf00a)] and [c[1] for c in m.calls if c[0]=='batch_init_selectrecord']==[2]
@@ -4184,7 +4205,9 @@ if variant=='ipod':
         assert m.nodes[icon]['type']=='image' and [m.get(icon+O[k]) for k in ('W_X','W_Y','W_W','W_H')]==[10,0,52,70]
         assert m.nodes[b]['style']=='s_btn_listitem' and [m.get(b+O[k]) for k in ('W_X','W_Y','W_W','W_H')]==[20,0,335,70]
         assert m.nodes[l]['type']=='hscroll_label' and m.nodes[l]['style']=='s_scrlabel_white24l' and m.get(l+O['W_X'])==72
-    def texts(): return [m.nodes[l]['text'] for l in labels]
+    def texts():
+        return [m.nodes[l]['text']+': '+m.nodes[m.nodes[l]['_setting_value']]['text'] for l in labels]
+    assert [m.nodes[l]['text'] for l in labels]==['Accent','Home','Battery']
     assert texts()==['Accent: Graphite','Home: Split','Battery: Icon']; passed()
     def click(i):
         m.calls=[]; f,ctx=m.handler(buttons[i],O['EVT_CLICK'])
@@ -4203,7 +4226,9 @@ if variant=='ipod':
         writes=click(2); assert [(w[0],m.text(w[2])) for w in writes]==[(value,'BATTERY')] and texts()[2]=='Battery: '+name
         assert ('widget_invalidate_force',bar) in [c[:2] for c in m.calls] and not [c for c in m.calls if c[0]=='image_manager_unload_all']
     passed()
-    m,view,rows=display({'ACCENT':'2','HOME':'1','BATTERY':'2'}); got=[m.nodes[m.nodes[m.nodes[r]['children'][0]]['children'][1]]['text'] for r in rows]; assert got==['Accent: Tidal','Home: Full','Battery: Icon + Percent']; passed()
+    m,view,rows=display({'ACCENT':'2','HOME':'1','BATTERY':'2'})
+    got=[m.nodes[m.nodes[m.nodes[r]['children'][0]]['children'][2]]['text'] for r in rows]
+    assert got==['Tidal','Full','Icon + Percent']; passed()
     # The wheel walks onto the new rows and Centre clicks them, as any fixed settings list.
     m,view,rows=display({})
     m.paint(view)
@@ -4272,7 +4297,7 @@ if variant=='ipod':
         for b in m.nodes[item]['children']:
             bx,by,bw,bh=geometry(m,b)
             assert (bx,by,bw,bh)==(0,0,375,geometry(m,item)[3])
-            icon=label=trail=None
+            icon=trail=None; labels=[]
             for c in m.nodes[b]['children']:
                 x,y,w,h=geometry(m,c); kind=m.nodes[c]['type']
                 if kind=='image' and w==SET['ICON']:
@@ -4281,13 +4306,16 @@ if variant=='ipod':
                 elif kind=='image':
                     assert w==50 and x+w==375-SET['EDGE'], (x,w); trail=x; box=(x,top+y+(h-50)//2+13,50,25)
                 else:
-                    label=(x,w); size=20 if h<30 else 24
+                    labels.append((x,w)); size=20 if h<30 else 24
                     box=(x,top+y+(h-size)//2,w,size)
                 x,y,w,h=box; inset=max(corner_inset(y),corner_inset(y+h))
                 assert inset<=x and x+w<=375-inset, (m.nodes[c]['type'],box,inset)
+            label=labels[0] if labels else None
             if icon and label: assert label[0]==icon[0]+icon[2]+SET['GAP']
             elif label: assert label[0]==SET['TEXT_X']
-            if label and not trail: assert label[0]+label[1]==375-SET['TEXT_X']
+            if len(labels)==2:
+                assert label[0]+label[1]<labels[1][0] and sum(labels[1])==375-SET['EDGE']
+            elif label and not trail: assert label[0]+label[1]==375-SET['TEXT_X']
             if label and trail: assert label[0]+label[1]<=trail+30  # the chevron's glyph starts 20px in
     for builder in (0x4c43e4, 0x4c0f6c, 0x4cbcc4, 0x4ccc70, 'display'):  # language, BT quality, System settings, Wi-Fi, Display
         m,view=settings(builder); items=m.nodes[view]['children']
@@ -4298,6 +4326,81 @@ if variant=='ipod':
         after=tree(m,view); assert after!=before
         assert lay(m,view)==0 and tree(m,view)==after, builder  # a later layout changes nothing
         passed()
+    # Bluetooth keeps the name/status stacked and hides unpair in the connection list.
+    # The separate removal list resolves the MAC again after native rows change order.
+    class BluetoothMachine(SettingsMachine):
+        def __init__(self):
+            super().__init__(); self.layouts=0; self.devices=[]; self.removals=[]
+            self.mock('list_item_create','button_create','image_create','hscroll_label_create','widget_use_style',
+                      'widget_set_name','image_set_draw_type','image_base_set_image','set_hscroll_label_attribute',
+                      'widget_on','widget_set_text_utf8','widget_set_text','widget_set_visible','widget_move_resize',
+                      'window_create','list_view_create','scroll_view_create','widget_destroy_children','deque_size','deque_at')
+            self.handlers[O['LIST_VIEW_LAYOUT']]='stock_list_layout'
+            self.view=self.node('scroll_view','scroll_view_bluetooth')
+            lst=self.node('list_view','list_view_bluetooth',[self.view]); self.owner=self.top=self.node('window','bluetooth_page',[lst])
+            self.nodes[self.wm]=dict(type='window_manager',name='',children=[self.owner])
+            self.word(self.owner+O['W_PARENT'],self.wm); self.word(lst+O['W_PARENT'],self.owner)
+            self.word(self.view+O['W_PARENT'],lst); self.word(self.view+O['W_W'],375)
+            self.word(lst+O['ROW_HEIGHT'],0); self.word(lst+O['LIST_DEFAULT_ITEM_HEIGHT'],SET['ROW'])
+            self.word(syms['pdeq_btshowlist'],self.alloc())
+        def hook(self,u,address,size,x):
+            name=self.handlers.get(address,''); a,b,c,d=[u.reg_read(r) for r in REGS]; sp=u.reg_read(UC_MIPS_REG_SP)
+            if name in ('window_create','list_view_create','scroll_view_create'):
+                kind=name.removesuffix('_create'); ret=self.node(kind)
+                parent=self.wm if kind=='window' else a
+                self.nodes[parent]['children'].append(ret); self.word(ret+O['W_PARENT'],parent)
+                self.word(ret+O['W_W'],d); self.word(ret+O['W_H'],self.get(sp+16))
+                if kind=='window': self.top=ret
+            elif name=='widget_destroy_children': self.nodes[a]['children']=[]; ret=0
+            elif name=='pointer_event_init':
+                self.word(a,b); self.word(a+0x10,c); self.word(a+O['EVENT_X'],d); self.word(a+O['EVENT_Y'],self.get(sp+16)); ret=a
+            elif name=='deque_size': ret=len(self.devices)
+            elif name=='deque_at': ret=self.devices[b]
+            else: return super().hook(u,address,size,x)
+            u.reg_write(UC_MIPS_REG_V0,ret); u.reg_write(UC_MIPS_REG_PC,u.reg_read(UC_MIPS_REG_RA))
+        def handler(self,w,kind): return next((f,ctx) for t,f,ctx in self.nodes[w]['handlers'] if t==kind)
+        def device(self,index,caption,paired=True):
+            record=self.alloc(); self.u.mem_write(record+4,f'00:00:00:00:00:{index:02d}'.encode()+b'\0'); self.devices.append(record)
+            item=self.node('list_item'); button=self.node('button',str(index))
+            self.nodes[self.view]['children'].append(item); self.nodes[item]['children']=[button]
+            self.word(item+O['W_PARENT'],self.view); self.word(button+O['W_PARENT'],item)
+            for w,g in ((item,(0,0,375,78)),(button,(20,0,335,70))):
+                for k,v in zip(('W_X','W_Y','W_W','W_H'),g): self.word(w+O[k],v)
+            children=[]
+            for kind,rect,props in [('image',(0,0,50,70),{'image':'bt_lefticon'}),
+                                   ('hscroll_label',(52,12,266,20),{'text':caption}),
+                                   ('hscroll_label',(52,44,266,16),{'text':'Paired'}),
+                                   *([('image',(276,0,50,70),{'image':'navbar_delete'})] if paired else [])]:
+                child=self.node(kind,**props); children.append(child); self.word(child+O['W_PARENT'],button)
+                for k,v in zip(('W_X','W_Y','W_W','W_H'),rect): self.word(child+O[k],v)
+            self.nodes[button]['children']=children
+            return item,button,children
+    m=BluetoothMachine(); first,button,children=m.device(0,'Headphones'); other,_,_=m.device(1,'Speaker',False)
+    lay(m,m.view)
+    assert geometry(m,children[1])==(80,12,275,20) and geometry(m,children[2])==(80,40,275,16)
+    assert not m.nodes[children[3]]['visible']
+    option=m.nodes[m.view]['children'][-1]; opener=m.nodes[option]['children'][0]
+    assert m.nodes[m.nodes[opener]['children'][0]]['text']=='Remove devices'
+    lay(m,m.view); assert len(m.nodes[m.view]['children'])==3
+    m.word(m.event,O['EVT_CLICK']); m.word(m.event+O['EVENT_X'],300)
+    connections=[]; m.on_click=lambda target,event: connections.append((target,m.get(event+O['EVENT_X'])))
+    m.call(address=HOOKS['widget_dispatch'][0],args=(button,m.event,0,0),event_type=O['EVT_CLICK'],gap=0)
+    assert connections==[(button,0)]; m.on_click=None; passed()
+    f,ctx=m.handler(opener,O['EVT_CLICK']); m.call(address=f,args=(ctx,m.event,0,0),gap=0)
+    page=m.top; removal_view=m.nodes[m.nodes[page]['children'][1]]['children'][0]
+    items=m.nodes[removal_view]['children']; assert len(items)==1
+    assert m.nodes[m.nodes[items[0]]['children'][0]]['text']=='Headphones'
+    pick,pickctx=m.handler(items[0],O['EVT_CLICK'])
+    # A scan inserts another device before the selected one. Address identity still finds it.
+    m.devices.reverse(); m.nodes[button]['name']='1'
+    def removed(target,event):
+        m.removals.append((target,m.get(event+O['EVENT_X'])))
+        m.nodes[button]['children'].remove(children[3])
+    m.on_click=removed
+    m.call(address=pick,args=(pickctx,m.event,0,0),gap=0)
+    assert m.removals==[(button,300)]
+    assert m.nodes[m.nodes[page]['children'][0]]['text']=='No paired devices'; passed()
+
     # A list whose default_item_height is not SET_ROW (local pages, Home) keeps its rows as built.
     m,view=settings(0x4cbcc4,default=72); before=tree(m,view); lay(m,view); after=tree(m,view)
     assert [r[1] for r in after]==[r[1] for r in before] and all(r[0][3]==72 for r in after); passed()
@@ -4657,8 +4760,15 @@ assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)
 assert m.calls[0][:3]==('stock_localmusic',m.top,5)
 # Library order: Shuffle Songs; Artist, Album, All Songs, Genre, Playlist, My Fav; Recently Added, Recent,
 # Most Played, Frequent, Hi-Res; then Update Local Music, last (stock rows by get_localmusic_showinfo index).
-kids=m.nodes[view]['children']; row,top=kids[0],kids[9]
-assert [kids[i] for i in (*range(1,9),10,11,12)]==[stock[i] for i in (3,2,1,4,10,6,9,8,7,5,0)] and m.nodes[row]['style']=='s_listitem_black'
+kids=m.nodes[view]['children']
+if variant=='ipod':
+    row=kids[7]; top=m.nodes[m.top]['_library_most']
+    assert kids[:6]==[stock[i] for i in (3,2,1,10,6,4)]
+    assert m.nodes[m.nodes[m.nodes[kids[6]]['children'][0]]['children'][0]]['text']=='Search'
+else:
+    row,top=kids[0],kids[9]
+    assert [kids[i] for i in (*range(1,9),10,11,12)]==[stock[i] for i in (3,2,1,4,10,6,9,8,7,5,0)]
+assert m.nodes[row]['style']=='s_listitem_black'
 icon,label=m.nodes[m.nodes[top]['children'][0]]['children']
 assert m.nodes[icon]['image']=='local_frequentplay' and m.nodes[label]['text']=='Most Played'
 button=m.nodes[row]['children'][0]; icon,label=m.nodes[button]['children']
@@ -4718,11 +4828,12 @@ m.page=m.top; assert m.texts()==['Most Played']+[x for p in zip(ranked[:3],detai
 # starts, a second press finds it running, and a timer reports the result once the thread ends.
 m=ShuffleMachine(); m.config.update(USER='u',PASSWORD='p',API_KEY='k')  # no API_SECRET: no row
 view=m.node('scroll_view','scroll_view_localmusic',[m.node('list_item') for _ in range(11)]); m.top=m.node('window','localmusic_page',[view])
-assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)==0 and len(m.nodes[view]['children'])==13
+assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)==0 and len(m.nodes[view]['children'])==(16 if variant=='ipod' else 13)
 assert ('/mnt/mmc/.scrobble.ini','LASTFM','API_SECRET','') in m.config_reads
 m.config['TOKEN']='tok'; m.nodes[view]['children']=[m.node('list_item') for _ in range(11)]
-assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)==0 and len(m.nodes[view]['children'])==14
-button=m.nodes[m.nodes[view]['children'][-2]]['children'][0]; icon,label=m.nodes[button]['children']
+assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)==0 and len(m.nodes[view]['children'])==(17 if variant=='ipod' else 14)
+row=m.nodes[m.top]['_library_upload'] if variant=='ipod' else m.nodes[view]['children'][-2]
+button=m.nodes[row]['children'][0]; icon,label=m.nodes[button]['children']
 assert m.nodes[icon]['image']=='local_scrobble' and m.nodes[label]['text']=='Upload Scrobbles' and not m.nodes[button].get('name')
 f,ctx=m.handler(button,O['EVT_CLICK'])
 assert m.call(address=f,args=(ctx,m.event,0,0),gap=0)==0 and m.toasts[-1][3]=='Connect to Wi-Fi first' and not m.threads
@@ -4739,8 +4850,8 @@ m=ShuffleMachine(); m.card=[('Music',4),('PODCASTS',4),('Audiobooks',8)]
 m.handlers[int(manifest['patch_symbols']['stock_folder_trampoline'],16)]='stock_folder'
 m.handlers[int(manifest['patch_symbols']['stock_folder_back_trampoline'],16)]='stock_folder_back'
 view=m.node('scroll_view','scroll_view_localmusic',[m.node('list_item') for _ in range(11)]); m.top=m.node('window','localmusic_page',[view])
-assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)==0 and len(m.nodes[view]['children'])==14
-button=m.nodes[m.nodes[view]['children'][-2]]['children'][0]; icon,label=m.nodes[button]['children']
+assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0)==0 and len(m.nodes[view]['children'])==(17 if variant=='ipod' else 14)
+button=m.nodes[m.nodes[view]['children'][10 if variant=='ipod' else -2]]['children'][0]; icon,label=m.nodes[button]['children']
 assert m.nodes[icon]['image']=='local_podcasts' and m.nodes[label]['text']=='Podcasts' and not m.nodes[button].get('name')
 f,ctx=m.handler(button,O['EVT_CLICK']); m.calls=[]
 assert m.call(address=f,args=(ctx,m.event,0,0),gap=0)==0 and [m.text(c[1]) for c in m.calls if c[0]=='navigator_to']==['folder_page']
@@ -4851,14 +4962,17 @@ class PhotosMachine(DepthMachine):
 # Local Music's last row opens the card's Photos folder (case aside) as albums: All Photos, then
 # each subfolder holding a photo, by name; hidden files, other types and empty folders are left out.
 R='/mnt/mmc/photos'
+def library_media_button(m,view,image):
+    return next(b for row in m.nodes[view]['children'] for b in m.nodes[row]['children']
+                if any(m.nodes[c].get('image')==image for c in m.nodes[b]['children']))
 tree={'/mnt/mmc':[('Music',4),('photos',4)],R:[('b.jpg',8),('A.png',8),('._b.jpg',8),('notes.txt',8),('Trip',4),('Empty',4),('.hidden',4)],
       R+'/Trip':[('2.JPG',8),('1.jpg',0)],R+'/Empty':[('x.txt',8)],R+'/.hidden':[('h.jpg',8)]}
 data={R+'/b.jpg':exif(6),R+'/A.png':b'\x89PNG',R+'/Trip/1.jpg':b'corrupt',R+'/Trip/2.JPG':exif(1)}
 m=PhotosMachine(tree,data)
 view=m.node('scroll_view','scroll_view_localmusic',[m.node('list_item') for _ in range(11)]); m.top=m.node('window','localmusic_page',[view])
 assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0,count=5_000_000)==0
-button=m.nodes[m.nodes[view]['children'][-1]]['children'][0]; icon,label=m.nodes[button]['children']
-assert m.nodes[icon]['image']=='local_photos' and m.nodes[label]['text']=='Photos' and len(m.nodes[view]['children'])==14
+button=library_media_button(m,view,'local_photos'); icon,label=m.nodes[button]['children']
+assert m.nodes[label]['text']=='Photos' and len(m.nodes[view]['children'])==(17 if variant=='ipod' else 14)
 f,ctx=m.handler(button,O['EVT_CLICK']); assert m.call(address=f,args=(ctx,m.event,0,0),gap=0,count=5_000_000)==0
 page=m.top; assert m.nodes[page]['name']=='photos_page' and m.nodes[page]['style:normal:bg_color']==-0x1000000
 albums,grid,viewer=m.nodes[page]['children']; assert not m.nodes[grid]['visible'] and not m.nodes[viewer]['visible']
@@ -5012,8 +5126,8 @@ files={R+'/Zed.txt':bytearray(txt.encode()),R+'/Series/A Tale.EPUB':bytearray(bu
 m=BooksMachine(tree,files)
 view=m.node('scroll_view','scroll_view_localmusic',[m.node('list_item') for _ in range(11)]); m.top=m.node('window','localmusic_page',[view])
 assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0,count=5_000_000)==0
-button=m.nodes[m.nodes[view]['children'][-1]]['children'][0]; icon,label=m.nodes[button]['children']
-assert m.nodes[icon]['image']=='local_books' and m.nodes[label]['text']=='Books' and len(m.nodes[view]['children'])==14
+button=library_media_button(m,view,'local_books'); icon,label=m.nodes[button]['children']
+assert m.nodes[label]['text']=='Books' and len(m.nodes[view]['children'])==(17 if variant=='ipod' else 14)
 f,ctx=m.handler(button,O['EVT_CLICK']); assert m.call(address=f,args=(ctx,m.event,0,0),gap=0,count=5_000_000)==0
 page=m.page=m.top; assert m.nodes[page]['name']=='books_page' and m.nodes[page]['style:normal:bg_color']==-0x1000000
 books,reader=m.nodes[page]['children']; sheet,info=m.nodes[reader]['children']
@@ -5067,8 +5181,8 @@ tree={'/mnt/mmc':[('Music',4),('VIDEOS',4)],R:[('b.MKV',8),('a.mp4',8),('notes.t
 m=BooksMachine(tree,{})
 view=m.node('scroll_view','scroll_view_localmusic',[m.node('list_item') for _ in range(11)]); m.top=m.node('window','localmusic_page',[view])
 assert m.call(address=HOOKS['localmusic_page_init'][0],args=(m.top,5,0,0),gap=0,count=5_000_000)==0
-button=m.nodes[m.nodes[view]['children'][-1]]['children'][0]; icon,label=m.nodes[button]['children']
-assert m.nodes[icon]['image']=='local_videos' and m.nodes[label]['text']=='Videos' and len(m.nodes[view]['children'])==14
+button=library_media_button(m,view,'local_videos'); icon,label=m.nodes[button]['children']
+assert m.nodes[label]['text']=='Videos' and len(m.nodes[view]['children'])==(17 if variant=='ipod' else 14)
 f,ctx=m.handler(button,O['EVT_CLICK']); assert m.call(address=f,args=(ctx,m.event,0,0),gap=0,count=5_000_000)==0
 page=m.page=m.top; videos,_=m.nodes[page]['children']
 assert m.nodes[page]['name']=='books_page' and labels(videos)==['Videos','c','a','b']; passed()
@@ -5159,7 +5273,7 @@ item=kids[2]; button=m.nodes[item]['children'][0]; title,value=m.nodes[button]['
 # Stock's row, title and value widgets alike.
 want=tree(m.nodes[rows[1]]['children'][0])
 assert m.nodes[item]['style']=='s_listitem_black' and tree(button)==want
-assert m.nodes[title]['text']=='CFW. Version' and m.nodes[value]['text']==f"V{VERSION} {'iPod' if variant=='ipod' else 'Stock'}{' dev'*manifest['dev']}"
+assert m.nodes[title]['text']=='CFW. Version' and m.nodes[value]['text']==f"V{VERSION} {'iPod' if variant=='ipod' else 'Stock'}{f" dev {manifest['build_number']}" if manifest['dev'] else ''}"
 assert not m.nodes[button].get('handlers') and not m.nodes[button].get('name'); passed()
 
 # Resume: once a second the UI loop polls the playing track; one of RESUME_MIN_S or longer keeps its
@@ -5288,7 +5402,197 @@ def settings_page(hook,view_name,config={},stock_rows=2):
         m.calls=[]; f,ctx=m.handler(buttons[i],O['EVT_CLICK'])
         assert m.call(address=f,args=(ctx,m.event,0,0),gap=0)==0
         return [(c[1],m.text(c[2]),m.text(c[3])) for c in m.calls if c[0]=='write_int_config']
-    return m,rows,lambda:[m.nodes[l]['text'] for l in labels],icons,click
+    def texts():
+        return [m.nodes[l]['text']+(': '+m.nodes[m.nodes[l]['_setting_value']]['text'] if variant=='ipod' else '') for l in labels]
+    return m,rows,texts,icons,click
+
+def scan_confirmation_checks():
+    if variant!='ipod': return
+    for prompt in ('msg_actionscan','Scan this library?'):
+        m=Machine(); win=m.top=m.node('dialog','confirminfo_dialog')
+        m.word(win+O['W_PARENT'],m.wm); m.word(win+O['W_W'],375); m.word(win+O['W_H'],320)
+        buttons=[m.entry(win,208+i*48) for i in range(2)]; m.nodes[win]['children']=buttons
+        for button,name in zip(buttons,('img_cancel','img_enter')):
+            m.nodes[button].update(type='button',name=name)
+            m.word(button+O['W_W'],375); m.word(button+O['W_H'],48)
+        m.translations={'msg_actionscan':'Scan this library?'}
+        ctx=m.alloc(256); m.byte(ctx,1); m.u.mem_write(ctx+8,prompt.encode()+b'\0')
+        m.call(address=IPOD_HOOKS['dialog_confirminfo_dialog_init'][0],args=(win,ctx,0,0),gap=0)
+        assert not m.timers, 'Scan must wait for the selected action'
+        m.paint(win); assert m.selected(win)==1
+        m.advance(1000); assert not m.clicks
+        m.byte(syms['g_volume'],42)
+        # Stock's centre-release lockout must not block wheel selection on this prompt.
+        m.byte(O['KEY_LOCKOUT'],8)
+        assert m.call(O['KEY_PREV'],gap=0,debounce=True)==11 and m.selected(win)==0
+        assert m.call(O['KEY_PREV'],gap=0,debounce=True)==11 and m.selected(win)==0
+        assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(win)==1
+        assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(win)==1
+        assert m.u.mem_read(syms['g_volume'],1)==b'*' and not m.moved()
+        assert m.confirm()==11 and m.clicks==[buttons[1]]; passed()
+    # Centre can also confirm Cancel, without scanning or changing volume.
+    m=Machine(); win=m.top=m.node('dialog','confirminfo_dialog')
+    m.word(win+O['W_PARENT'],m.wm); m.word(win+O['W_W'],375); m.word(win+O['W_H'],320)
+    buttons=[m.entry(win,208+i*48) for i in range(2)]; m.nodes[win]['children']=buttons
+    for button,name in zip(buttons,('img_cancel','img_enter')):
+        m.nodes[button].update(type='button',name=name)
+    ctx=m.alloc(256); m.byte(ctx,1); m.u.mem_write(ctx+8,b'msg_actionscan\0')
+    m.call(address=IPOD_HOOKS['dialog_confirminfo_dialog_init'][0],args=(win,ctx,0,0),gap=0)
+    assert m.call(O['KEY_PREV'])==11 and m.selected(win)==0
+    assert m.confirm()==11 and m.clicks==[buttons[0]]; passed()
+
+scan_confirmation_checks()
+
+def classic_ux_checks():
+    """Exercise the compiled Classic confirmation, editor and Library routes."""
+    if variant!='ipod': return
+    def handler(m,w,kind): return next((f,c) for t,f,c in m.nodes[w]['handlers'] if t==kind)
+    for prompt,action,auto,kind in (
+        ('msg_delsong','Delete song',False,1), ('msg_poweroff','Shut down',False,1),
+        ('msg_confirmupdate','Install update',False,1), ('msg_lowarn','Enable line out',False,1),
+        ('msg_actionscan','Scan music',True,1), ('msg_btreconnect','Reconnect',True,1),
+        ('msg_actionscan','Scan music',False,3), ('unknown','Continue',False,1),
+        ('Delete this song?','Delete song',False,1),
+    ):
+        m=Machine(); m.page('confirminfo_dialog')
+        cancel=m.node('button','img_cancel'); accept=m.node('button','img_enter')
+        m.nodes[m.top]['children']=[cancel,accept]; m.translations={'msg_delsong':'Delete this song?'}
+        ctx=m.alloc(256); m.byte(ctx,kind); m.u.mem_write(ctx+8,prompt.encode()+b'\0')
+        assert m.call(address=IPOD_HOOKS['dialog_confirminfo_dialog_init'][0],args=(m.top,ctx,0,0),gap=0)==0
+        assert m.calls[0][:3]==('stock_confirm_dialog',m.top,ctx)
+        assert (m.nodes[cancel]['text'],m.nodes[accept]['text'])==('Cancel',action)
+        assert bool(m.timers)==auto
+        m.advance(0); assert m.clicks==([accept] if auto else [])
+        m.advance(1000); assert m.clicks==([accept] if auto else []); passed()
+    for change in ('destroy','covered'):
+        m=Machine(); m.page('confirminfo_dialog'); win=m.top
+        m.nodes[win]['children']=[m.node('button','img_cancel'),m.node('button','img_enter')]
+        ctx=m.alloc(256); m.byte(ctx,1); m.u.mem_write(ctx+8,b'msg_actionscan\0')
+        m.call(address=IPOD_HOOKS['dialog_confirminfo_dialog_init'][0],args=(win,ctx,0,0),gap=0)
+        if change=='destroy':
+            f,c=handler(m,win,O['EVT_DESTROY']); m.call(address=f,args=(c,m.event,0,0),gap=0)
+        else: m.page('another_page')
+        m.advance(0); assert not m.clicks and not m.timers; passed()
+    for page in ('backlight_page','maxvol_page','bootvol_page','balance_page'):
+        for key,name in ((O['KEY_NEXT'],'img_add'),(O['KEY_PREV'],'img_dec')):
+            m=Machine(); m.page(page); target=m.node('image',name,visible=0)
+            m.nodes[m.top]['children']=[target]
+            assert m.call(key)==11 and m.clicks==[target]; passed()
+        m=Machine(); m.page(page); win=m.top
+        assert m.call(O['KEY_CENTER'],gap=0)==11
+        m.advance(DC-1); assert not any(c[0]=='navigator_back' for c in m.calls)
+        m.advance(1); assert sum(c[0]=='navigator_back' for c in m.calls)==1
+        m.advance(1000); assert not any(c[0]=='navigator_back' for c in m.calls); passed()
+        for change in ('double','destroy','covered','busy','timer_failure'):
+            m=Machine(); m.page(page); win=m.top
+            m.timer_fail=change=='timer_failure'
+            m.call(O['KEY_CENTER'],gap=0)
+            if change=='double': m.call(O['KEY_CENTER'],gap=100)
+            elif change=='destroy':
+                f,c=handler(m,win,O['EVT_DESTROY']); m.call(address=f,args=(c,m.event,0,0),gap=0)
+            elif change=='covered': m.page('another_page')
+            elif change=='busy': m.animating=1
+            immediate=sum(c[0]=='navigator_back' for c in m.calls)
+            m.advance(DC)
+            assert sum(c[0]=='navigator_back' for c in m.calls)+immediate==int(change=='timer_failure'),change
+            assert not m.timers; passed()
+    m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager')
+    assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click']
+    for row in rows:
+        b=m.nodes[row]['children'][0]; title=m.nodes[b]['children'][1]
+        assert ':' not in m.nodes[title]['text'] and m.nodes[title]['_setting_value'] in m.nodes[b]['children']
+    assert click(2)==[(1,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Single click'; passed()
+
+    # Menu paint reads live settings, reuses the value label and avoids unchanged text writes.
+    for page,view_name,icon,caption,setting,initial,changed in (
+        ('display_page','scroll_view_display','display_backlight','Brightness','g_lightness',40,41),
+        ('playset_page','scroll_view_playset','playset_maxvol','Max volume','g_maxvolume',50,51),
+        ('playset_page','scroll_view_playset','playset_bootvol','Startup volume','g_bootvolume',30,31),
+        ('playset_page','scroll_view_playset','playset_balance','Balance',None,0,0),
+    ):
+        m=Machine(); image=m.node('image',image=icon); title=m.node('hscroll_label',text='Native title')
+        value=m.node('hscroll_label',text='Old value'); button=m.node('button',children=[image,title,value])
+        row=m.node('list_item',children=[button]); view=m.node('scroll_view',view_name,[row])
+        m.top=m.node('window',page,[view]); m.word(button+O['W_W'],375); m.word(button+O['W_H'],68)
+        m.word(title+O['W_X'],80)
+        for child,parent in ((title,button),(value,button),(button,row),(row,view),(view,m.top)):
+            m.word(child+O['W_PARENT'],parent)
+        if setting: m.byte(syms[setting],initial)
+        m.byte(syms['g_bootvol_flag'],1)
+        def repaint(): m.call(address=IPOD_HOOKS['widget_on_paint_background'][0],args=(m.top,m.canvas,0,0),gap=0)
+        repaint()
+        expected='Center' if setting is None else f'{initial}%' if page=='display_page' else str(initial)
+        assert m.nodes[title]['text']==caption and m.nodes[value]['text']==expected
+        assert m.nodes[title]['_setting_value']==value and len(m.nodes[button]['children'])==3
+        assert (m.get(title+O['W_X']),m.get(title+O['W_W']))==(80,139)
+        assert (m.get(value+O['W_X']),m.get(value+O['W_W']))==(231,120)
+        assert m.nodes[value]['style:normal:text_align_h']=='right'
+        repaint(); assert not any(c[0]=='widget_set_text_utf8' for c in m.calls)
+        if setting:
+            m.byte(syms[setting],changed); repaint()
+            assert m.nodes[value]['text']==(f'{changed}%' if page=='display_page' else str(changed))
+        if setting=='g_bootvolume':
+            m.byte(syms['g_bootvol_flag'],0); repaint(); assert m.nodes[value]['text']=='Last used'
+        passed()
+
+    class LibraryMachine(ShuffleMachine):
+        def hook(self,u,address,size,unused):
+            super().hook(u,address,size,unused)
+            if self.handlers.get(address)=='c:window_create':
+                page=u.reg_read(UC_MIPS_REG_V0)
+                self.word(page+O['W_PARENT'],self.wm); self.nodes[self.wm]['children'].append(page)
+    m=LibraryMachine(); stock=[m.node('list_item',children=[m.node('button',str(i))]) for i in range(11)]
+    view=m.node('scroll_view','scroll_view_localmusic',stock); owner=m.node('window','localmusic_page',[view])
+    m.top=owner; m.stack=[owner]; m.nodes[m.wm]=dict(type='window_manager',name='',children=[owner],visible=1)
+    for child,parent in [(owner,m.wm),(view,owner)]+[(row,view) for row in stock]: m.word(child+O['W_PARENT'],parent)
+    m.call(address=HOOKS['localmusic_page_init'][0],args=(owner,0,0,0),gap=0)
+    visible=[r for r in m.nodes[view]['children'] if m.nodes[r]['visible']]
+    assert visible[:6]==[stock[i] for i in (3,2,1,10,6,4)]
+    def caption(row):
+        return next(m.nodes[c]['text'] for c in m.nodes[m.nodes[row]['children'][0]]['children'] if 'text' in m.nodes[c])
+    assert [caption(visible[i]) for i in (6,7,8,10)]==['Search','Shuffle Songs','Listening history','Library tools']
+    def activate(widget):
+        f,c=m.handler(widget,O['EVT_CLICK']); return m.call(address=f,args=(c,m.event,0,0),gap=0)
+    activate(m.nodes[visible[6]]['children'][0])
+    assert any(c[:3]==('stock_search',owner,m.event) for c in m.calls); passed()
+    for index,page_name,names,targets in (
+        (8,'libraryhistory_page',['Recently added','Recently played','Most played','Frequent'],
+         [stock[9],stock[8],m.nodes[owner]['_library_most'],stock[7]]),
+        (10,'librarytools_page',['Scan music'],[stock[0]]),
+    ):
+        activate(m.nodes[visible[index]]['children'][0]); page=m.top
+        assert m.nodes[page]['name']==page_name
+        rows=m.nodes[m.find('scroll_view',page)]['children']
+        assert [m.nodes[m.nodes[r]['children'][0]]['text'] for r in rows]==names
+        menu=m.find('scroll_view',page); m.paint(menu)
+        assert m.selected(menu)==0
+        if len(rows)>1:
+            assert m.call(O['KEY_NEXT'])==11 and m.selected(menu)==1
+        m.confirm(); assert m.clicks[-1]==rows[min(1,len(rows)-1)]; passed()
+        activate(m.nodes[visible[index]]['children'][0]); assert m.top==page
+        for row,target in zip(rows,targets):
+            activate(row); assert m.clicks[-1]==m.nodes[target]['children'][0]
+        m.clicks=[]; m.nodes[owner]['_library_generation']+=1
+        activate(rows[0]); assert not m.clicks
+        m.nodes[owner]['_library_generation']-=1
+        m.nodes[m.wm]['children'].remove(owner); activate(rows[0]); assert not m.clicks
+        m.nodes[m.wm]['children'].insert(0,owner)
+        f,c=m.handler(page,O['EVT_KEY_UP']); assert m.call(O['KEY_RETURN'],address=f,args=(c,m.event,0,0),gap=0)==11
+        assert m.top==owner
+        m.nodes[m.wm]['children'].remove(page); passed()
+    generation=m.nodes[owner]['_library_generation']
+    m.config['TOKEN']='tok'
+    m.nodes[view]['children']=[m.node('list_item',children=[m.node('button',str(i))]) for i in range(11)]
+    m.nodes[owner]['_library_generation']=0  # a replacement owner may reuse the same address
+    m.call(address=HOOKS['localmusic_page_init'][0],args=(owner,0,0,0),gap=0)
+    assert m.nodes[owner]['_library_generation']!=generation
+    tools=next(r for r in m.nodes[view]['children'] if m.nodes[r]['visible'] and
+               any(m.nodes[c].get('text')=='Library tools' for b in m.nodes[r]['children'] for c in m.nodes[b]['children']))
+    activate(m.nodes[tools]['children'][0]); rows=m.nodes[m.find('scroll_view',m.top)]['children']
+    assert [m.nodes[m.nodes[r]['children'][0]]['text'] for r in rows]==['Scan music','Upload scrobbles']
+    activate(rows[1]); assert m.clicks[-1]==m.nodes[m.nodes[owner]['_library_upload']]['children'][0]; passed()
+
+classic_ux_checks()
 m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager')
 assert len(rows)==3 and icons==['usb_chargeswitch','system_powermanager','system_keylock'] and all(m.nodes[r]['style']=='s_listitem_black' for r in rows)
 assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click']

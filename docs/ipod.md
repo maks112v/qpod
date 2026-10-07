@@ -237,6 +237,21 @@ With these values the text, icons and trailing images of the first and the last 
 the rounded glass (`test/patch.py` runs the Language, Bluetooth quality, System Settings and
 Wi-Fi builders and the Display rows, then checks both positions).
 
+Bluetooth device rows keep the device name above its status. Their inline delete icon is hidden.
+The **Remove devices** option opens a separate list of paired devices; selecting one uses the
+stock unpair confirmation, then refreshes the list for the next removal. Normal device rows connect.
+
+Rows with a current value use a separate right-aligned 120-pixel value column, with a
+20-pixel title and 16-pixel value. Brightness, maximum/startup volume and balance summaries
+refresh from the live setting when their parent menu paints. In-place choices such as
+Accent, Home, Battery and Wake use the same columns.
+
+Brightness, maximum volume, startup volume and balance editors share a centred title,
+large 40-pixel native value and slim touch-draggable bar. The wheel runs the native +/-
+actions, including their limits and persistence. Single Centre finishes after the usual
+double-click window; a double Centre still locks. The native +/- widgets remain allocated
+but hidden, so their callbacks continue to work.
+
 ### Settings icons
 
 Scaling the 52-pixel artwork down on the device left jagged edges, so the build pre-sizes it
@@ -466,20 +481,18 @@ bar is drawn in the dialog's background: the button's own rectangle for a button
 the dialog (the confirm pair), the full width otherwise. A new dialog starts on its first button,
 Cancel on the confirm pair.
 
-The confirm pair sits symmetrically, each 80-pixel tile centred in its half of the screen (x 53
-and 242). Its stock discs are Shanling red with white glyphs, which the red-tone mapping would
-turn light (Graphite's silver would leave the white check at 1.4:1), so the shared image hook
-gives `confirm_ok`, `confirm_cancel` and their pressed images a dark surface under every
-accent, Crimson included: the same red-blend mapping with `CONFIRM_SURFACE` (`#2B2B2B`) as the
-tone, so the OK disc is `#2B2B2B` and Cancel's lighter tint `#595959`, while the glyphs stay
-white and near white (`#E5E5E5`): 14.2:1 and 5.6:1. Every confirm prompt uses these images through
-`s_img_confirmok`/`s_img_confirmcancel`, so all are covered. The wheel's focus is the accent tile
-behind the disc with a two-pixel white frame, visible on any accent. Callbacks, actions and the
-initial Cancel are stock. Tidal's own confirm pop-up (cyan, black glyphs) keeps its look.
+The native confirmation pair becomes two flat, full-width 48-pixel text buttons at y 208
+and 256. Cancel remains first and selected by default. Known prompts name the action,
+such as Delete song, Shut down or Install update; unknown prompts use Continue. The stock
+prompt, optional checkbox and result callbacks remain intact. Only scan and Bluetooth
+reconnect prompts with the simple native layout are accepted automatically on the next UI
+tick. Deletion, updates, line out and shutdown still require confirmation. Tidal's own
+confirm pop-up keeps its stock look.
 
 | Dialog                                           | Buttons                                         |
 | ------------------------------------------------ | ----------------------------------------------- |
-| `confirminfo_dialog`, `tidal_confirminfo_dialog` | `img_cancel`, `img_enter` (80x80, side by side) |
+| `confirminfo_dialog` | `img_cancel`, `img_enter` (375x48, stacked text actions) |
+| `tidal_confirminfo_dialog` | `img_cancel`, `img_enter` (80x80, side by side) |
 | `autoshutdown_dialog`                            | `btn_cancel`                                    |
 | `tidal_quality_select_dialog`                    | four quality rows, `btn_ok`                     |
 | `tidal_sortmode_dialog`                          | three sort rows, `btn_cancel`                   |
@@ -509,8 +522,9 @@ the System settings Display icon (`system_display`), "Home: Split" with Play set
 mode icon (`playset_covermode`) and "Battery: Icon" (Icon, Percent, Icon + Percent; see
 [Status bar and clock](#status-bar-and-clock)) with the power manager icon
 (`system_powermanager`), all among the [settings icons](#settings-icons) the build
-pre-sizes. The value is in the label (260 pixels wide, to where the chevron ends) and there is no
-chevron, since Centre or a tap changes them in place.
+pre-sizes. Each value now sits in the shared right-aligned value column, with its caption
+separate, and there is no chevron, since Centre or a tap changes them in place. Brightness
+also shows its current percentage beside its caption before opening the editor.
 The page is `CTX_FIXED`, so the wheel walks onto them like the stock rows.
 
 A change is saved at once with the stock `write_int_config(value, "IPOD", key)` (`0x4f3f4c`):

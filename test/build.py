@@ -287,9 +287,26 @@ def validate_assets(directory):
             assert dim[1][0] == QS_EDGE and bright[1][0] + bright[1][2] == 375 - QS_EDGE and dim[2]['image'] == 'drop_lighleft'
             assert dim[1][0] + QS_SUN < slider[1][0] and slider[1][0] + slider[1][2] < bright[1][0]
             continue
-        if short == CONFIRM:  # iPod only: the stock pair, symmetric about the centre
+        if short == CONFIRM:  # labeled full-width actions, safely defaulting to Cancel
             cancel, enter = root[3]
-            assert cancel[1][0] == 375 - enter[1][0] - enter[1][2] and cancel[1][1:] == enter[1][1:] == decode(original)[3][0][1][1:]
+            assert cancel[0] == enter[0] == 'button'
+            assert cancel[1] == [0,208,375,48] and enter[1] == [0,256,375,48]
+            assert [n[2]['text'] for n in root[3]] == ['Cancel','Continue']
+            assert [n[2]['name'] for n in root[3]] == ['img_cancel','img_enter']
+            assert all(not any(k.endswith(':bg_image') for k in n[2]) for n in root[3])
+            continue
+        from ipod import SLIDER_EDITORS
+        if short in SLIDER_EDITORS:
+            title,value,slider=SLIDER_EDITORS[short]
+            named={n[2].get('name'):n for n in walk(root)}
+            assert named['label_editor_title'][2]['text']==title
+            assert named[value][1]==[40,64,295,56] and named[value][2]['style:normal:font_size']=='40'
+            bar=named[slider]
+            assert bar[1]==[40,146,295,48] and bar[2]['bar_size']=='8'
+            assert bar[2]['slide_with_bar']=='true'
+            assert not any(k.endswith((':bg_image',':fg_image',':icon')) for k in bar[2])
+            assert all(named[n][2]['visible']=='false' for n in ('img_dec','img_add'))
+            assert named['label_editor_done'][2]['text']=='Centre to finish'
             continue
         if short == HOME_PAGE and not ipod:  # only the Coverflow card is added
             cards = [n[2]['name'] for n in root[3][0][3]]
