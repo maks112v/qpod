@@ -106,6 +106,9 @@ Flash the [official firmware](https://en.shanling.com/download/150) the same way
 
 ## Display settings
 
+System settings order: Wireless Setting, Display, Power management, Buttons lock, Key tone,
+Network Service, In-Vehicle mode, Date and time, Language, System Update, About, Reset settings.
+
 **System settings → Display**:
 
 | Setting     | Options                                                   |

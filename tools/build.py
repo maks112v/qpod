@@ -47,6 +47,7 @@ HOOKS = {
     'set_equalizer_value': (0x4f9230, 'peq_stock_eq'),
     'home_page_init': (0x523c84, 'coverflow_home'),
     'localmusic_page_init': (0x524424, 'ringnav_localmusic'),
+    'playermore_page_init': (0x528c14, 'ringnav_playermore'),
     # Library lists: an Unknown row with no songs is dropped
     'load_localclass_list': (0x5088cc, 'ringnav_localclass'),
     # The three songtable writers; Coverflow keeps its album list until one runs.
@@ -85,7 +86,8 @@ TRAMPOLINES = {'keyup': 'on_wm_keyup_before_fun', 'touch': 'on_wm_tsdown_before_
                'delete_song': 'deleteMusicFromMusicDb', 'sleep': 'main_loop_sleep_default',
                'about': 'systemset_about_page_init', 'folder': 'folder_page_init', 'folder_back': 'folder_back',
                'input': 'window_manager_dispatch_input_event', 'buzzer': 'buzzeer_switch',
-               'power': 'systemset_powermanager_page_init', 'audioset': 'playset_playset_page_init'}
+               'power': 'systemset_powermanager_page_init', 'audioset': 'playset_playset_page_init',
+               'playermore': 'playermore_page_init'}
 # Every audited stock PIC prologue resolves this GOT base.
 GP = 0xa26cc0
 # iPod: style_get_gradient has no PIC prologue. It is a leaf that null-checks the style and its
@@ -146,6 +148,12 @@ DROP_CACHES = (0x5120a8, 0x12220006, 0x10000006)
 # WHEEL_TRAVEL. At stock a small nudge moved a row. Tuned on the device.
 WHEEL_TRAVEL = 1.2
 WHEEL_THRESHOLDS = ((0x625ce0, 0x24060014), (0x625cdc, 0x2403000a), (0x625ba0, 0x24060014))
+# systemset's builder and click callback share this row-ID table. Reordering it keeps each
+# translated label, icon, toggle and destination together in both firmware variants.
+SYSTEM_SETTINGS_TABLE = 0x76d054
+SYSTEM_SETTINGS_ORDER = (1, 3, 4, 8, 7, 2, 6, 5, 0, 9, 11, 10)
+# Wireless, Display, Power, Buttons lock, Key tone, Network Service, In-Vehicle,
+# Date and time, Language, System Update, About, Reset settings.
 # Now Playing More's first row and the page it opens are the play queue, which stock English calls
 # "Playlists" (player_playlist, used nowhere else; Local Music's are "Playlist"). Same size: the
 # table finds each value by offset, so the padding NULs are never read.
@@ -609,6 +617,9 @@ def build(zip_path, out, logo, ipod=False, dev=False, build_number=None):
     patch_word(patched, *SHUFFLE_CALL, 0x0c000000 | (ps['ringnav_shuffle'] >> 2),
                'shuffle honours Play next')
     patch_word(patched, *DROP_CACHES, 'keep the page cache')
+    for index, row_id in enumerate(SYSTEM_SETTINGS_ORDER):
+        patch_word(patched, SYSTEM_SETTINGS_TABLE + 4 * index, index, row_id,
+                   'System settings order')
     for address, old in WHEEL_THRESHOLDS:
         patch_word(patched, address, old, old & 0xffff0000 | round((old & 0xffff) * WHEEL_TRAVEL),
                    'wheel travel per tick')

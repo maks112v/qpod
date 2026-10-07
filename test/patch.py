@@ -541,6 +541,33 @@ def passed():
     global checks
     checks+=1
 
+# Now Playing More keeps its stock queue and Add to playlist rows, and opens the playlist
+# manager in browsing mode. The existing picker uses mode 2 and remains stock.
+class PlayerPlaylistsMachine(Machine):
+    def __init__(self):
+        super().__init__()
+        self.handlers[int(manifest['patch_symbols']['stock_playermore_trampoline'],16)]='stock_playermore'
+        self.mock('widget_restack','navigator_to_with_context')
+    def hook(self,u,address,size,unused):
+        if self.handlers.get(address)=='widget_restack':
+            a,b=[u.reg_read(r) for r in REGS[:2]]
+            kids=next(n['children'] for n in self.nodes.values() if a in n['children'])
+            kids.remove(a); kids.insert(b,a)
+            u.reg_write(UC_MIPS_REG_V0,0); u.reg_write(UC_MIPS_REG_PC,u.reg_read(UC_MIPS_REG_RA))
+        else: super().hook(u,address,size,unused)
+m=PlayerPlaylistsMachine(); rows=[m.node('list_item') for _ in range(8)]
+view=m.node('scroll_view','scroll_view_more',rows); m.top=m.node('window','playermore_page',[view])
+assert m.call(address=HOOKS['playermore_page_init'][0],args=(m.top,5,0,0),gap=0)==0
+assert m.calls[0][:3]==('stock_playermore',m.top,5)
+kids=m.nodes[view]['children']; assert kids[:2]==rows[:2] and kids[3:]==rows[2:]
+button=m.nodes[kids[2]]['children'][0]; label=m.nodes[button]['children'][0]
+assert m.nodes[label]['text']=='Manage playlists'
+event,callback,ctx=m.nodes[button]['handlers'][0]; assert event==O['EVT_CLICK']
+m.call(address=callback,args=(ctx,m.event,0,0),gap=0)
+opened=[c for c in m.calls if c[0]=='navigator_to_with_context']
+assert len(opened)==1 and m.text(opened[0][1])=='localmusic/playlist_page' and opened[0][2]==0
+assert not m.started; passed()
+
 # Slider settings: wheel ticks dispatch stock +/- clicks rather than changing playback volume.
 for page in ('backlight_page','maxvol_page','bootvol_page','balance_page'):
     for key,button in ((O['KEY_NEXT'],'img_add'),(O['KEY_PREV'],'img_dec')):
@@ -4339,6 +4366,13 @@ if variant=='ipod':
             if label and trail: assert label[0]+label[1]<=trail+30  # the chevron's glyph starts 20px in
     for builder in (0x4c43e4, 0x4c0f6c, 0x4cbcc4, 0x4ccc70, 'display'):  # language, BT quality, System settings, Wi-Fi, Display
         m,view=settings(builder); items=m.nodes[view]['children']
+        if builder==0x4cbcc4:
+            icons=[m.nodes[c]['image'] for item in items for b in m.nodes[item]['children']
+                   for c in m.nodes[b]['children'] if m.nodes[c]['type']=='image']
+            assert [icon for icon in icons if icon.startswith('system_')]==[
+                'system_wifiset','system_display','system_powermanager','system_keylock',
+                'system_keytone','system_netservice','system_carmode','system_time',
+                'system_language','system_update','system_about','system_reset']
         before=tree(m,view); assert lay(m,view)==0 and m.layouts==1
         assert [geometry(m,i)[1] for i in items]==[SET['ROW']*k for k in range(len(items))], builder  # 78px items too
         assert all(geometry(m,i)[3]==SET['ROW'] for i in items)
@@ -5763,5 +5797,37 @@ assert m.pass_(O['LOW_IDLE_MS'])[1]==[]; passed()
 # A boot that stalled offlining CPU1 left the marker: the next one renames it and never tries.
 m=PowerMachine({'LOWPOWER':'1'},files={MARK:b''}); m.byte(syms['g_backlight_status'],0); m.pass_(1)
 assert not m.writes and '/mnt/data/q2pod-cpu1.bad' in m.files and MARK not in m.files; passed()
+
+# Execute the native System settings click callback in both variants: row positions resolve
+# through the reordered table, including the two toggles that share this callback.
+class SystemSettingsMachine(Machine):
+    def hook(self,u,address,size,x):
+        name=self.handlers.get(address,'')
+        if name in ('settings_atoi','settings_window','settings_access'):
+            ret=(int(self.text(u.reg_read(REGS[0]))) if name=='settings_atoi'
+                 else 0xffffffff if name=='settings_access' else self.top)
+            u.reg_write(UC_MIPS_REG_V0,ret); u.reg_write(UC_MIPS_REG_PC,u.reg_read(UC_MIPS_REG_RA)); return
+        return super().hook(u,address,size,x)
+
+destinations=('wifiset','display','powermanager','keylock',None,'netservice',None,
+              'datetime','language','fwupdate','about','reset')
+for index,destination in enumerate(destinations):
+    m=SystemSettingsMachine(); m.top=m.node('window','sysset_page')
+    button=m.node('button'); m.word(button+0x10,m.string(str(index)))  # stock widget's name
+    m.handlers[syms['atoi@GLIBC_2.0']]='settings_atoi'
+    m.handlers[syms['widget_get_window']]='settings_window'
+    m.handlers[syms['access@GLIBC_2.0']]='settings_access'  # no stock debug marker
+    m.mock('navigator_switch_to','write_int_config')
+    m.byte(syms['g_keytone_flag'],0); m.byte(syms['g_carmode'],0)
+    for click in range(2 if destination is None else 1):
+        m.calls=[]
+        assert m.call(address=0x4cc134,args=(button,m.event,0,0),gap=0)==0
+        if destination:
+            assert [m.text(c[1]) for c in m.calls if c[0]=='navigator_switch_to']==[
+                'systemset/'+destination+'_page']
+        else:
+            key='KEYTONE' if index==4 else 'CARMODE'
+            assert [(c[1],m.text(c[3])) for c in m.calls if c[0]=='write_int_config']==[(1-click,key)]
+    passed()
 
 print(f'{checks} MIPS execution scenarios passed; toolkit services mocked, stock lock filter executed.')

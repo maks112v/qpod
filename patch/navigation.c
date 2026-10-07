@@ -12,7 +12,8 @@ extern int stock_keyup_trampoline(void *, void *), stock_touch_trampoline(void *
     stock_folder_trampoline(void *, void *), stock_folder_back_trampoline(void *, void *),
     stock_input_trampoline(void *, void *), stock_buzzer_trampoline(int),
     stock_localclass_trampoline(int), stock_power_trampoline(void *, void *),
-    stock_audioset_trampoline(void *, void *), stock_confirm_dialog_trampoline(void *, void *);
+    stock_audioset_trampoline(void *, void *), stock_confirm_dialog_trampoline(void *, void *),
+    stock_playermore_trampoline(void *, void *);
 extern void *coverflow_tracks(void *page);
 extern void *coverflow_album(void *page), *coverflow_album_tracks(void *r);
 extern unsigned coverflow_scope(void *page);
@@ -1575,6 +1576,27 @@ static void *list_row(void *view, const char *icon, int (*click)(void *, void *)
     widget_use_style(label, "s_scrlabel_white24l");
     set_hscroll_label_attribute(label);
     return label;
+}
+
+/* The stock player picker uses mode 2 to add its selected queue song, and already offers
+ * Create playlist. Mode 0 opens the same page for browsing, rename and delete. Keep More
+ * underneath so Back returns here without closing a window inside its click dispatch. */
+static int player_playlists(void *win, void *event) {
+    (void)win;
+    (void)event;
+    navigator_to_with_context("localmusic/playlist_page", (void *)0);
+    return 0;
+}
+
+int ringnav_playermore(void *win, void *ctx) {
+    int result = stock_playermore_trampoline(win, ctx);
+    void *view = win ? widget_lookup(win, "scroll_view_more", 1) : (void *)0;
+    if (view && widget_count_children(view) == 8) {
+        void *label = list_row(view, (void *)0, player_playlists, win);
+        widget_set_text_utf8(label, "Manage playlists");
+        widget_restack(P(P(label, W_PARENT), W_PARENT), 2);
+    }
+    return result;
 }
 
 #if IPOD
