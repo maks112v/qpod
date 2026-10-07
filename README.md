@@ -134,7 +134,7 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 - **Visualizer:** swipe Now Playing to its fourth page: Spectrum, Oscilloscope, VU Meters or Halo. Tap to switch; your choice is kept. It follows what you hear, EQ included.
 - **Quick settings:** pull down from the top edge.
 - **Slider settings:** turn the wheel to adjust brightness, maximum volume, startup volume or balance. In Quick Settings, the wheel adjusts brightness.
-- **Shutdown:** use the power control in Quick Settings. Holding Centre never shuts down.
+- **Shutdown:** System settings → Power management → Shut down, then confirm. Holding Centre never shuts down.
 - **Wake:** double-click Centre by default. System settings → Power management → Wake can switch to a single click, including unlocking.
 - **Page slides:** in from the right, back out on Return.
 - **Fast-scroll letter:** spinning a long list shows the letter it sorts under (C for The Cure).

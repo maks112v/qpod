@@ -200,7 +200,7 @@ static menu_t g_menu __attribute__((section(".scratch")));
  * one of the audited local row lists that carry over at the ends. The index is remembered
  * instead of the name pointer: AWTK owns and frees the window's name string. */
 enum { CTX_DYNAMIC, CTX_FIXED, CTX_FOLDER, CTX_LOCAL };
-enum { RING = 1, DRILL = 2, BUTTONS = 4 };
+enum { RING = 1, DRILL = 2, BUTTONS = 4, CHOICE = 8 };
 typedef struct {
     const char *name;
     unsigned char kind, flags;
@@ -216,6 +216,13 @@ static int context_id(const char *name) {
     return -1;
 }
 
+#if IPOD
+static int selection_window(void *w) {
+    int ctx = w ? context_id(widget_get_prop_str(w, "name", "")) : -1;
+    return ctx >= 0 && (contexts[ctx].flags & (BUTTONS | CHOICE));
+}
+#endif
+
 /* The audited local row lists built from the compact assets: the file and music views. Grids
  * (album_page), settings menus, dynamic pages and the home carousel keep hard ends. */
 static int ring_list(const menu_t *m) {
@@ -223,14 +230,14 @@ static int ring_list(const menu_t *m) {
 }
 
 /* The view kinds load() actually navigates: a vertical scroll view, a table client, a slide
- * menu or (iPod) a BUTTONS dialog, which does not scroll. A horizontal or page-snapping scroll
+ * menu or (iPod) a BUTTONS window, which does not scroll. A horizontal or page-snapping scroll
  * view is not a candidate, so it cannot make a page look like it has two panes. */
 static int kind(void *w) {
     const char *t = widget_get_type(w);
     if (!tk_strcmp(t, "slide_menu")) return 3;
     if (!tk_strcmp(t, "table_client")) return 2;
 #if IPOD
-    if (!tk_strcmp(t, "dialog")) {
+    if (!tk_strcmp(t, "dialog") || !tk_strcmp(t, "window")) {
         int ctx = context_id(widget_get_prop_str(w, "name", (void *)0));
         return ctx >= 0 && (contexts[ctx].flags & BUTTONS) ? 4 : 0;
     }
@@ -651,6 +658,7 @@ static int context_now(unsigned *scope) {
 }
 
 static int index_of(menu_t *m, int id);
+static rect_t bounds(menu_t *m, int i);
 static void reveal(menu_t *m, int id, int immediate);
 
 /* Bounded recency order avoids a timestamp that could wrap during a long session. */
@@ -701,7 +709,11 @@ static int load_rows(menu_t *m, void *w) {
     if (m->kind == 1 && I(w, VIEW_CONTENT_H) < 0) return 0;
     if (m->kind == 1 || m->kind == 4) {
         entries_t s = { m->at, 0, MAX_ENTRIES, 4096 };
-        for (unsigned i = 0; i < n; ++i) collect(widget_get_child(w, i), &s, 1);
+        for (unsigned i = 0; i < n; ++i) {
+            void *child = widget_get_child(w, i);
+            if (m->kind == 4 && !tk_strcmp(widget_get_prop_str(child, "name", ""), "view_navbar")) continue;
+            collect(child, &s, 1);
+        }
         m->n = s.n;
         m->rows = s.n;
         for (int i = 0; i < m->n; ++i) m->id[i] = i;
@@ -721,6 +733,31 @@ static int load_rows(menu_t *m, void *w) {
     return 1;
 }
 
+#if IPOD
+/* Native option builders mark the current choice with the select image. */
+static int checked_choice(void *w, int depth, int *budget) {
+    if (!w || depth == 16 || --*budget < 0 || !widget_get_visible(w)) return 0;
+    if (!tk_strcmp(widget_get_prop_str(w, "image", ""), "select")) return 1;
+    unsigned n = widget_count_children(w);
+    for (unsigned i = 0; i < n; ++i)
+        if (checked_choice(widget_get_child(w, i), depth + 1, budget)) return 1;
+    return 0;
+}
+
+static int selection_default(const menu_t *m) {
+    if (!selection_window(window_manager_get_top_window(window_manager()))) return -1;
+    int requested = widget_get_prop_int(m->w, "_selection_default", -1);
+    if (requested >= 0 && requested < m->rows) return requested;
+    for (int i = 0; i < m->n; ++i) {
+        int budget = 256;
+        if (checked_choice(m->at[i], 0, &budget)) return m->id[i];
+    }
+    return m->rows ? 0 : -1;
+}
+#endif
+
+static void reveal(menu_t *m, int id, int immediate);
+
 static int load(menu_t *m, void *w, int recall) {
     if (!load_rows(m, w)) return 0;
     m->ctx = context_now(&m->scope);
@@ -734,14 +771,29 @@ static int load(menu_t *m, void *w, int recall) {
     if (st.fx_surface && (st.fx_surface != w || scope != m->scope || count != m->rows)) fx_cancel();
     if (count != m->rows) {
         if (st.wheel_surface == w) drop_wheel();
+#if IPOD
+        prop(w, SEL, selection_default(m));
+#else
         prop(w, SEL, -1);
+#endif
         prop(w, COUNT, m->rows);
+#if IPOD
+        int initial = widget_get_prop_int(w, SEL, -1);
+        int slot = index_of(m, initial);
+        if (slot >= 0 && m->kind == 1) {
+            rect_t r = bounds(m, slot);
+            if (r.y < 0 || r.y + r.h > m->height) reveal(m, initial, 1);
+        }
+#endif
     }
     /* A recreated page has never seen this surface (COUNT unset) and lost its selection: put the
      * user back where they left off. A live page whose count changed resets the selection but
      * keeps its viewport, so it does not re-read the table. A non-virtual list prefers the
      * remembered first text, breaks ties by the second text and then by the remembered index,
      * and falls back to the index when no text matches. */
+#if IPOD
+    if (selection_window(window_manager_get_top_window(window_manager()))) recall = 0;
+#endif
     if (recall && m->kind != 3 && count < 0) {
         int p = position(m);
         int id = p < 0 ? -1 : st.pos[p].id - 1;
@@ -1407,7 +1459,10 @@ static void paint_selection(void *w, void *canvas) {
         i = reconcile(&g_menu,
                       !moving(&g_menu) && !window_manager_get_pointer_pressed(window_manager()));
     }
-    /* Touch hides the selection until the wheel or a button, except on Home (iPod's list). */
+#if IPOD
+    if (selection_window(top)) shown = 1;
+#endif
+    /* Browsing pages hide the selection after touch; option pickers always show it. */
     int home = top && !tk_strcmp(widget_get_prop_str(top, "name", ""), "home_page");
     if (i < 0 || (!shown && !home)) return;
     rect_t r = bounds(&g_menu, i), old;
@@ -1630,12 +1685,24 @@ static void pod_rows(void *win, const char *view_name, int first, int n, const c
     }
 }
 
+/* Reuse stock's Centre-hold confirmation and its power-state guards without a physical hold. */
+static int shutdown_click(void *ctx, void *event) {
+    (void)ctx; (void)event;
+    unsigned key_event[EVENT_KEY / sizeof(unsigned) + 1] = { 0 };
+    I(key_event, EVENT_TYPE) = EVT_KEY_LONG;
+    I(key_event, EVENT_KEY) = KEY_CENTER;
+    return stock_keylong_trampoline((void *)0, key_event);
+}
+
 /* systemset_powermanager_page_init and playset_playset_page_init: stock builds its rows, then
  * these follow in the same widgets and styles (list_row), with the value in the label. */
 int ringnav_powermanager(void *win, void *ctx) {
     static const char *const icons[] = { "usb_chargeswitch", "system_powermanager", "system_keylock" };
     int result = stock_power_trampoline(win, ctx);
     pod_rows(win, "scroll_view_powermanager", POD_CHARGE, 3, icons);
+    void *view = win ? widget_lookup(win, "scroll_view_powermanager", 1) : (void *)0;
+    if (view)
+        widget_set_text_utf8(list_row(view, "system_powermanager", shutdown_click, (void *)0), "Shut down");
     return result;
 }
 int ringnav_audioset(void *win, void *ctx) {
@@ -2275,32 +2342,12 @@ int ringnav_display(void *win, void *ctx) {
     return result;
 }
 
-static int confirm_auto_closed(void *win, void *event) {
-    (void)event;
-    unsigned timer = (unsigned)widget_get_prop_int(win, "_confirm_auto", 0);
-    if (timer) timer_remove(timer);
-    return 0;
-}
-
-static int confirm_auto(const void *info) {
-    void *win = P(info, 0x20);
-    prop(win, "_confirm_auto", 0);
-    if (usable() && window_manager_get_top_window(window_manager()) == win) {
-        void *button = widget_lookup(win, "img_enter", 1);
-        if (button) {
-            char click[0x30];
-            stock_dispatch_trampoline(button, pointer_event_init(click, EVT_CLICK, button, 0, 0));
-        }
-    }
-    return 0;
-}
-
 /* Stock retains the prompt, optional delete-source checkbox and result callbacks. Only exact
  * translated prompt matches name the action; unknown confirmations keep a neutral Continue. */
 int ringnav_confirm_dialog(void *win, void *ctx) {
     int result = stock_confirm_dialog_trampoline(win, ctx);
     if (!win || !ctx || result) return result;
-    static const struct { const char *key, *action; int harmless; } actions[] = {
+    static const struct { const char *key, *action; int accept; } actions[] = {
         { "msg_delplaylist", "Delete playlist", 0 }, { "msg_delsong", "Delete song", 0 },
         { "msg_delfile", "Delete file", 0 }, { "msg_delalbum", "Delete album", 0 },
         { "msg_delartist", "Delete artist", 0 }, { "msg_delgenre", "Delete genre", 0 },
@@ -2312,19 +2359,18 @@ int ringnav_confirm_dialog(void *win, void *ctx) {
         { "msg_actionscan", "Scan music", 1 }, { "msg_btreconnect", "Reconnect", 1 },
     };
     const char *prompt = (const char *)ctx + 8, *action = "Continue";
-    int harmless = 0;
+    int accept = 0;
     for (unsigned i = 0; i < sizeof actions / sizeof *actions; ++i) {
         const char *translated = locale_info_tr(locale_info(), actions[i].key);
         if (!tk_strcmp(prompt, actions[i].key) || (translated && !tk_strcmp(prompt, translated))) {
             action = actions[i].action;
-            harmless = actions[i].harmless && B(ctx, 0) == 1;
+            accept = actions[i].accept;
             break;
         }
     }
     widget_set_text_utf8(widget_lookup(win, "img_cancel", 1), "Cancel");
     widget_set_text_utf8(widget_lookup(win, "img_enter", 1), action);
-    if (harmless && widget_on(win, EVT_DESTROY, confirm_auto_closed, win))
-        prop(win, "_confirm_auto", (int)timer_add(confirm_auto, win, 0));
+    prop(win, "_selection_default", accept);
     return result;
 }
 #else
@@ -3653,7 +3699,7 @@ static int qm_hold(void) {
     return 1;
 }
 
-/* Centre opens row actions or does nothing; shutdown stays in Quick Settings. */
+/* Centre opens row actions or does nothing; shutdown lives in Power management. */
 int ringnav_keylong(void *ctx, void *event) {
     unsigned key = event ? (unsigned)I(event, EVENT_KEY) : 0;
     if (key == KEY_CENTER) {
@@ -4110,6 +4156,19 @@ int ringnav(void *ctx, void *event) {
         return STOP;
     }
     if (key != KEY_CENTER) st.unlock_waiting = 0;
+#if IPOD
+    /* Choice screens own both directions, even during stock's opening-press lockout. */
+    if (key == KEY_PREV || key == KEY_NEXT) {
+        void *top = window_manager_get_top_window(window_manager());
+        if (selection_window(top)) {
+            if (!usable()) {
+                drop_input();
+                return STOP;
+            }
+            result = 0;
+        }
+    }
+#endif
     if (result) {
         cancel_center();
         if (key == KEY_PREV || key == KEY_NEXT) drop_wheel();

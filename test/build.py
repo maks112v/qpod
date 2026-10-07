@@ -263,9 +263,13 @@ def validate_assets(directory):
             continue
         # iPod: browsing, settings and the PEQ editor slide; Home, Now Playing, the bar and dialogs don't.
         slides = ipod and short not in (HOME_PAGE, STATUS_BAR, PLAYING_PAGE, QUICK_SETTINGS, CONFIRM)
-        assert root[2].get('anim_hint') == (SLIDE if slides else None), short
+        expected_hint = SLIDE if slides else None
+        if short in AUDIT['selection_assets'] and root[0]=='dialog':
+            expected_hint = decode(original)[2].get('anim_hint')
+        assert root[2].get('anim_hint') == expected_hint, short
         if ipod:  # screen coordinates: the bar, full-screen dialogs (quick settings slides down from -320), windows
             origin, window = {STATUS_BAR: (0, (0, 30)), QUICK_SETTINGS: (320, (0, 320)), CONFIRM: (0, (0, 320))}.get(short, (30, (30, 320)))
+            if root[0]=='dialog' and short in AUDIT['selection_assets']: origin, window = 0, (0, 320)
             corners(short, root, 0, origin, window)
         if short == QUICK_SETTINGS:  # iPod only: the stock 4x2 grid, even label areas, a slim brightness track
             menu, light = root[3]
@@ -389,6 +393,18 @@ def validate_assets(directory):
             # Stock places the A-B markers at y 250 and x = 50 + t * 290 / length; iPod's follow its bar.
             assert [int.from_bytes(demo[fileoff(demo, a):fileoff(demo, a)+4], 'little') for a in (0x52a318, 0x52a330)] == [
                 0x24020000 | NP_BAR[2], 0x24420000 | NP_BAR[0]]
+            continue
+        if short in AUDIT['selection_assets']:
+            old_nodes, new_nodes = list(walk(decode(original))), list(walk(root))
+            assert len(old_nodes) == len(new_nodes)
+            for old, node in zip(old_nodes, new_nodes):
+                assert old[0] == node[0] and old[2].get('name') == node[2].get('name')
+                if node[0] in ('button', 'list_item'):
+                    assert {v for k, v in node[2].items() if k.endswith(':bg_color')} == {'#00000000'}
+                    assert {v for k, v in node[2].items() if k.endswith(':border_width')} == {'0'}
+            if root[0] == 'window':
+                nav = next(n for n in root[3] if n[2].get('name') == 'view_navbar')
+                assert nav[2]['visible'] == nav[2]['enable'] == 'false'
             continue
         if short == ARTIST_PAGE:
             assert [n[2]['value'] for n in walk(root) if n[0] == 'pages'] == ['1'], 'Artist page must show Albums'

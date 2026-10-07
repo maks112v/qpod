@@ -300,5 +300,13 @@
         ["hscroll_label", "s_scrlabel_red24l", "text_color", "ff1448ff", "ffffffff", 3]
       ]
     }
+  },
+  "selection_assets": {
+    "dialog/autoshutdown_dialog.bin": "5d6dabe9a4d557a11f7720b2365ba15b0dea866658fce7db48d2b762c8aef4ad",
+    "dialog/updatemusic_dialog.bin": "00caddad2d46c9e2ccaad04d6c7587bc3be8de9b5dce5a4cebed6724104380df",
+    "dialog/tidal/tidal_quality_select_dialog.bin": "e2ee1ed0db14202b1a9a6fef8afc38d5e204eb42cc0e6185cf9a818ca59cc59a",
+    "dialog/tidal/tidal_sortmode_dialog.bin": "ca6e65dac0fed49c2a02b5e7b9c236a699639953c6b27ca14490de74753a6280",
+    "tidal/tidal_more_page.bin": "95a84bc39932805d9c2868d02a101a7151b33b6ea4c3997a9ed97f06d438e544",
+    "tidal/tidal_collectionmore_page.bin": "b7d142e80851e97d85360fd95230bc47a9ff3c77a4e6137e44f82aee0ba53124"
   }
 }

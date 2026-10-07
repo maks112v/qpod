@@ -30,7 +30,7 @@ Checked MIPS prologues redirect into a payload at `0xb00000`, using the final un
 | `folder_back`                         | `0x507ac8` | Back at that folder leaves the page                                                      |
 | `window_manager_dispatch_input_event` | `0x66d49c` | No input reaches the UI while a video plays ([Videos](#videos))                          |
 | `buzzeer_switch`                      | `0x4f3cc8` | No buzzer while music plays or headphones/BT listen ([Key Tone](#key-tone))              |
-| `systemset_powermanager_page_init`    | `0x4c72d0` | Adds Charge limit and Low power ([Charge limit](#charge-limit), [Low power](#low-power)) |
+| `systemset_powermanager_page_init`    | `0x4c72d0` | Adds Charge limit, Low power, Wake and Shut down ([Charge limit](#charge-limit), [Low power](#low-power)) |
 | `playset_playset_page_init`           | `0x4b98d8` | Adds Artists to Audio settings ([Album artists](#album-artists))                         |
 | `window_manager_paint`                | `0x66d46c` | `WM_PAINT_LEAF`: no PIC prologue; no painting while a video plays                        |
 | `widget_on_paint_background`          | `0x65c77c` | iPod only: selection bar, status bar fill, clock, codec fade and battery                 |
@@ -108,7 +108,7 @@ Stock's key-up filter rejects wheel releases while a centre-key lockout (`KEY_LO
 
 ## Queue menu
 
-Centre holds never enter stock's shutdown confirmation. Where no row actions apply, the hook consumes the hold and marks its release to be swallowed. Shutdown remains available through Quick Settings' power control.
+Centre holds never enter stock's shutdown confirmation. Where no row actions apply, the hook consumes the hold and marks its release to be swallowed. System settings → Power management → Shut down calls the stock Centre-hold trampoline with a synthetic key event, retaining its power-state guards and confirmation before shutdown.
 
 Holding Centre (key 218) fires the stock long press after 1000 ms. `ringnav_keylong` takes it only with the navigation gates, AirPlay off (`airplayGetFlag() != 2`), no batch-select mode (`g_navbar_status`) and the row a centre press would open, on a `CTX_LOCAL`/`CTX_FOLDER` page, an artist's page (`artistinfo_page`, whose tabs fill the showlist) included. There the row's class is `g_local_classinfo_save+0`, which its tabs' `load_localartist_list` sets (`0xff07` songs, `0xff01` albums); `g_class_type` keeps the class the page opened or was last returned to with. The page's row count must equal `deque_size(*p_deque_showlist)`: these lists bind row _i_ to showlist record _i_ (Local Songs `table_row_of` → `deque_at` at `0x4a8838`), and a grid or extra clickable row fails the check. Other keys tail-call the stock body unless the Play/Pause shortcut applies.
 
@@ -191,7 +191,7 @@ reject stale targets after Library destruction or rebuild. Return closes the sub
 
 ## Coverflow depth
 
-Coverflow draws its covers in software, after Rockbox PictureFlow's renderer: the selected cover faces the viewer at its native 160 pixels, two neighbours a side are turned 60 degrees inward, pushed back and dimmed, and each has a reflection. `patch/coverflow.c` owns the drawing; the stock `slide_menu` stays the navigation and animation controller, so the wheel (one retargeted animator, 200 ms or 120 ms fast, reversal), wrapping, centre, the saved album and track positions and the Refresh card all work as before. The covers are wheel-only: the `slide_menu` is insensitive, so touch neither drags nor taps them. Tunables are `CF_*` in `patch/offsets.inc`; adjust them together.
+Coverflow draws its covers in software, after Rockbox PictureFlow's renderer: the selected cover faces the viewer at its native 160 pixels, two neighbours a side are turned 60 degrees inward, pushed back and dimmed, and each has a reflection. `patch/coverflow.c` owns the frame and textures, with the shared integer renderer in `patch/coverflow_render.inc`; the stock `slide_menu` stays the navigation and animation controller, so the wheel (one retargeted animator, 200 ms or 120 ms fast, reversal), wrapping, centre, the saved album and track positions and the Refresh card all work as before. The covers are wheel-only: the `slide_menu` is insensitive, so touch neither drags nor taps them. Tunables are `CF_*` in `patch/offsets.inc`; adjust them together.
 
 **Layout.** With depth the `slide_menu` spans the frame, 375 × 210 (`CF_VIEW_W` × `CF_VIEW_H`) at the top of the page, so every animator step invalidates all of it. Its items stay `h` square (210), and `slide_menu_set_spacer` (a store at `+0x84` and an invalidate) sets the spacer to `CF_STRIDE - 210`, so the stride that stock scroll, completion and ringnav's wheel steps use (item width plus spacer) is `CF_STRIDE` (110 px). The children are `image` widgets with no image, so stock paints nothing under the frame. The album and artist captions sit under the frame at `CF_TEXT_Y` in both builds and change on `EVT_VALUE_CHANGED`, when a move commits, never mid-move.
 

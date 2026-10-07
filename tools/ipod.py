@@ -14,7 +14,7 @@ import struct
 from build import ROOT, check as require, fileoff
 
 AUDIT = json.loads((pathlib.Path(__file__).resolve().parents[1]/'patch/ipod.json').read_text())
-UI_ASSETS = AUDIT['assets'] | AUDIT['navbar_only'] | AUDIT['slide_only']
+UI_ASSETS = AUDIT['assets'] | AUDIT['navbar_only'] | AUDIT['slide_only'] | AUDIT['selection_assets']
 # The app window is the 375x320 screen minus the 30px status bar, so a 290px list holds four
 # 72px rows. The stock 52px artwork is drawn 1:1 (no rescaling) with an 8px inset inside the
 # 68px row body. Rows keep the row layout's eight-pixel left margin for the artwork.
@@ -585,10 +585,37 @@ def patch_word(data, address, old, new, purpose, changes=None):
         changes.append(dict(address=hex(address), original=hex(old), patched=hex(new), purpose=purpose))
 
 
+def selection_asset(root):
+    """Let the selection painted behind native choices remain visible through their rows."""
+    for kind, _, props, _ in walk(root):
+        if kind in ('button', 'list_item'):
+            for state in ('normal', 'pressed', 'over', 'disable', 'focused'):
+                props[f'style:{state}:bg_color'] = '#00000000'
+                props[f'style:{state}:border_color'] = '#00000000'
+                props[f'style:{state}:border_width'] = '0'
+                props[f'style:{state}:round_radius'] = '0'
+    if root[0] == 'window':
+        root[2]['anim_hint'] = SLIDE
+        for node in root[3]:
+            if node[2].get('name') == 'view_navbar':
+                node[2].update(visible='false', enable='false')
+            elif node[1][1] >= 50:
+                node[1][1] -= 50
+    # Full-width progress labels also need room inside the rounded glass.
+    origin = 0 if root[0] == 'dialog' else 30
+    for kind, geometry, _, _ in root[3]:
+        if kind in ('label', 'hscroll_label') and geometry[0] == 0 and geometry[2] == 375:
+            edge = corner_x(origin + geometry[1], geometry[3])
+            geometry[0], geometry[2] = edge, 375 - 2 * edge
+
+
 def patch_asset(path, data, ipod):
     require(hashlib.sha256(data).hexdigest() == UI_ASSETS[path], f'{path}: unaudited UI asset')
     root = decode(data)
     require(encode(root) == data, f'{path}: UI round trip differs')
+    if ipod and path in AUDIT['selection_assets']:
+        selection_asset(root)
+        return encode(root)
     if path == ARTIST_PAGE:
         artist_tabs(root)
     whole = ({HOME_PAGE: ipod_home, STATUS_BAR: status_bar, PLAYING_PAGE: playing_page, QUICK_SETTINGS: quick_settings,

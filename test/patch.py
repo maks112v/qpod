@@ -3591,11 +3591,25 @@ def track(m,name,path,disc=0,no=0,cue=0):
     for k,v in (('REC_DISC',disc),('REC_TRACK',no),('REC_CUE_START',cue)): m.word(r+O[k],v)
     return r
 for found,want in (((('b.mp3','/p/b.mp3',2,1),('a.mp3','/p/a.mp3',1,2),('c.mp3','/p/c.mp3',1,1)),['c','a','b']),
-                   ((('Mr. Blue','/p/img.flac',0,0,300),('Intro','/p/img.flac'),('01 x.flac','/p/01 x.flac')),['01 x','Intro','Mr. Blue'])):
+                   ((('Mr. Blue','/p/img.flac',0,0,300),('Intro','/p/img.flac'),('01 x.flac','/p/01 x.flac')),['x','Intro','Mr. Blue'])):
     m=CoverflowMachine(); m.found=[track(m,*t) for t in found]; m.open(); view=m.tracks()
     assert [m.nodes[m.nodes[i]['children'][0]].get('text') for i in m.nodes[view]['children']]==want
     f,ctx=m.handler(m.nodes[view]['children'][0],O['EVT_CLICK']); m.call(address=f,args=(ctx,m.event,0,0),gap=0)
-    assert [n.rsplit('.',1)[0] if n.endswith(('.mp3','.flac')) else n for n in m.names(m.plays[-1][1]&0xffffffff)]==want; passed()
+    queued=[n.rsplit('.',1)[0] if n.endswith(('.mp3','.flac')) else n for n in m.names(m.plays[-1][1]&0xffffffff)]
+    assert queued==(['01 x','Intro','Mr. Blue'] if want[0]=='x' else want); passed()
+
+# Album display hides filename numbering, prefers title tags, and preserves numeric titles.
+for filename,title,no,want in (('01 - Song.flac','',0,'Song'), ('2. Song.flac','',0,'Song'),
+                               ('03_Song.flac','',0,'Song'), ('4 Song.flac','',4,'Song'),
+                               ('99 Luftballons.flac','',0,'99 Luftballons'),
+                               ('1984.flac','',0,'1984'), ('01.flac','',0,'01'),
+                               ('01 - Song.flac','99 Luftballons',1,'99 Luftballons'),
+                               ('01 - Song.flac','01 Love',1,'01 Love')):
+    m=CoverflowMachine(); r=track(m,filename,'/p/'+filename,no=no)
+    m.word(r+O['REC_TITLE'],m.string(title)); m.found=[r]; m.open(); view=m.tracks()
+    row=m.nodes[view]['children'][0]
+    assert m.nodes[m.nodes[row]['children'][0]]['text']==want
+    assert m.names(m.get(syms['mcl_pdeqplaylist']))==['A','B','C']; passed()
 
 # Album holds use the live carousel before tracks have ever been opened, and the same ordering.
 for action,want in ((0,['A','early','late','B','C']),(1,['A','B','C','early','late'])):
@@ -3907,9 +3921,10 @@ class DepthMachine(CoverflowMachine):
 def host_render(textures,cases):
     """The same renderer source built for the host: frames for (frac, mask of drawn slots) cases."""
     import subprocess, tempfile
-    from coverflow import SHIM_H
     main=r"""#include <stdio.h>
-void coverflow_render(unsigned *, int, int, const unsigned *const[7]);
+#include <string.h>
+#include "offsets.inc"
+#include "coverflow_render.inc"
 static unsigned tex[7][160 * 160], frame[%d * %d];
 int main(void) {
     const unsigned *ring[7];
@@ -3924,10 +3939,8 @@ int main(void) {
     return 0;
 }""" % (O['CF_VIEW_H'],O['CF_VIEW_W'],O['CF_VIEW_W'])
     with tempfile.TemporaryDirectory(prefix='q2-render-') as d:
-        d=pathlib.Path(d); (d/'shim.h').write_text(SHIM_H); (d/'main.c').write_text(main)
-        subprocess.run(['cc','-m32','-O1','-DPEQ_HOST','-DPEQ_ROOT=""',f'-DIPOD={int(variant=="ipod")}','-D_GNU_SOURCE',
-                        '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-I',str(ROOT/'patch'),'-include',str(d/'shim.h'),
-                        str(ROOT/'patch/coverflow.c'),str(d/'main.c'),'-o',str(d/'render')],check=True)
+        d=pathlib.Path(d); (d/'main.c').write_text(main)
+        subprocess.run(['cc','-O1','-I',str(ROOT/'patch'),str(d/'main.c'),'-o',str(d/'render')],check=True)
         feed=b''.join(textures)+''.join(f'{f} {m}\n' for f,m in cases).encode()
         out=subprocess.run([str(d/'render')],input=feed,capture_output=True,check=True).stdout
     size=4*O['CF_VIEW_W']*O['CF_VIEW_H']
@@ -5385,8 +5398,8 @@ m=ResumeMachine({'/mnt/data/ringnav-plays':b''.join(struct.pack('<II',*e) for e 
 playing(m,0,200,pos=0,n=110); assert counts(m)==[(fnv('/p/A'),1)]+full[:5]+full[6:]; passed()
 
 # Settings rows (docs/internals.md#charge-limit, #low-power, #album-artists): Power management gains
-# Charge limit and Low power, Audio settings gains Artists, after the stock rows in the same widgets
-# and styles; Centre or tap toggles and saves each. Artists is stock's own PLAYSET ARTISTTYPE.
+# Charge limit, Low power, Wake and Shut down; Audio settings gains Artists, after stock rows.
+# Centre or tap toggles settings or opens the shutdown confirmation. Artists uses PLAYSET ARTISTTYPE.
 def settings_page(hook,view_name,config={},stock_rows=2):
     m=QueueMachine(); m.config.update(config)
     m.handlers[int(manifest['patch_symbols'][f'stock_{hook}_trampoline'],16)]='stock_'+hook
@@ -5403,12 +5416,12 @@ def settings_page(hook,view_name,config={},stock_rows=2):
         assert m.call(address=f,args=(ctx,m.event,0,0),gap=0)==0
         return [(c[1],m.text(c[2]),m.text(c[3])) for c in m.calls if c[0]=='write_int_config']
     def texts():
-        return [m.nodes[l]['text']+(': '+m.nodes[m.nodes[l]['_setting_value']]['text'] if variant=='ipod' else '') for l in labels]
+        return [m.nodes[l]['text']+(': '+m.nodes[m.nodes[l]['_setting_value']]['text'] if variant=='ipod' and '_setting_value' in m.nodes[l] else '') for l in labels]
     return m,rows,texts,icons,click
 
 def scan_confirmation_checks():
     if variant!='ipod': return
-    for prompt in ('msg_actionscan','Scan this library?'):
+    for prompt in ('msg_actionscan','Scan this library?','msg_btreconnect'):
         m=Machine(); win=m.top=m.node('dialog','confirminfo_dialog')
         m.word(win+O['W_PARENT'],m.wm); m.word(win+O['W_W'],375); m.word(win+O['W_H'],320)
         buttons=[m.entry(win,208+i*48) for i in range(2)]; m.nodes[win]['children']=buttons
@@ -5428,6 +5441,13 @@ def scan_confirmation_checks():
         assert m.call(O['KEY_PREV'],gap=0,debounce=True)==11 and m.selected(win)==0
         assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(win)==1
         assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(win)==1
+        for field in ('animating','pressed'):
+            setattr(m,field,1)
+            assert m.call(O['KEY_PREV'])==11 and m.selected(win)==1
+            setattr(m,field,0)
+        m.byte(syms['g_backlight_status'],0)
+        assert m.call(O['KEY_NEXT'])==11 and m.selected(win)==1
+        m.byte(syms['g_backlight_status'],1)
         assert m.u.mem_read(syms['g_volume'],1)==b'*' and not m.moved()
         assert m.confirm()==11 and m.clicks==[buttons[1]]; passed()
     # Centre can also confirm Cancel, without scanning or changing volume.
@@ -5443,6 +5463,56 @@ def scan_confirmation_checks():
 
 scan_confirmation_checks()
 
+def selection_screen_checks():
+    """Every audited choice screen owns the wheel and starts with a visible selection."""
+    if variant!='ipod': return
+    contexts=(ROOT/'patch/contexts.inc').read_text()
+    names=re.findall(r'\{ "([^"\n]+)", CTX_\w+, (CHOICE|BUTTONS) \}',contexts)
+    for name,kind in names:
+        m=Machine()
+        if kind=='CHOICE':
+            w=m.page(name); win=m.top; rows=[m.entry(w,i*48) for i in range(3)]
+            m.nodes[w]['children']=rows; m.word(w+O['VIEW_CONTENT_H'],144)
+            marker=m.node('image',image='select'); m.nodes[rows[1]]['children']=[marker]
+            m.word(marker+O['W_PARENT'],rows[1]); default=1
+        else:
+            win=w=m.top=m.node('window' if name.endswith('_page') else 'dialog',name)
+            m.word(win+O['W_PARENT'],m.wm); m.word(win+O['W_W'],375); m.word(win+O['W_H'],320)
+            rows=[m.entry(w,i*48) for i in range(3)]
+            navbar=m.node('view','view_navbar'); back=m.entry(navbar)
+            m.nodes[navbar]['children']=[back]; m.word(navbar+O['W_PARENT'],win)
+            m.nodes[w]['children']=[navbar]+rows; default=0
+        for row in rows: m.word(row+O['W_W'],375)
+        # Touch elsewhere must not hide the default on the newly opened picker.
+        m.touch()
+        m.paint(w); assert m.selected(w)==default and m.drawn(),name
+        m.byte(syms['g_volume'],42); m.byte(O['KEY_LOCKOUT'],8)
+        assert m.call(O['KEY_NEXT'],gap=0,debounce=True)==11 and m.selected(w)==default+1,name
+        m.advance(300)
+        assert m.call(O['KEY_PREV'],gap=0,debounce=True)==11 and m.selected(w)==default,name
+        for field in ('animating','pressed'):
+            setattr(m,field,1); assert m.call(O['KEY_NEXT'])==11 and m.selected(w)==default,name
+            setattr(m,field,0)
+        m.byte(syms['g_backlight_status'],0)
+        assert m.call(O['KEY_NEXT'])==11 and m.selected(w)==default,name
+        m.byte(syms['g_backlight_status'],1)
+        assert m.u.mem_read(syms['g_volume'],1)==b'*',name
+        assert m.confirm()==11 and m.clicks==[rows[default]],name
+        passed()
+
+    # Opening a long picker reveals the checked option, rather than replacing it with row zero.
+    m=Machine(); w=m.page('language_page'); rows=[m.entry(w,i*48) for i in range(12)]
+    m.nodes[w]['children']=rows; m.word(w+O['VIEW_CONTENT_H'],576)
+    m.nodes[rows[10]]['children']=[m.node('image',image='select')]
+    m.paint(w); assert m.selected(w)==10 and m.get(w+O['SCROLL_Y'])>0
+    assert m.confirm()==11 and m.clicks==[rows[10]]
+    w=m.page('language_page'); rows=[m.entry(w,i*48) for i in range(3)]
+    m.nodes[w]['children']=rows; m.word(w+O['VIEW_CONTENT_H'],144)
+    m.nodes[rows[2]]['children']=[m.node('image',image='select')]
+    m.paint(w); assert m.selected(w)==2; passed()
+
+selection_screen_checks()
+
 def classic_ux_checks():
     """Exercise the compiled Classic confirmation, editor and Library routes."""
     if variant!='ipod': return
@@ -5450,7 +5520,7 @@ def classic_ux_checks():
     for prompt,action,auto,kind in (
         ('msg_delsong','Delete song',False,1), ('msg_poweroff','Shut down',False,1),
         ('msg_confirmupdate','Install update',False,1), ('msg_lowarn','Enable line out',False,1),
-        ('msg_actionscan','Scan music',True,1), ('msg_btreconnect','Reconnect',True,1),
+        ('msg_actionscan','Scan music',False,1), ('msg_btreconnect','Reconnect',False,1),
         ('msg_actionscan','Scan music',False,3), ('unknown','Continue',False,1),
         ('Delete this song?','Delete song',False,1),
     ):
@@ -5464,15 +5534,6 @@ def classic_ux_checks():
         assert bool(m.timers)==auto
         m.advance(0); assert m.clicks==([accept] if auto else [])
         m.advance(1000); assert m.clicks==([accept] if auto else []); passed()
-    for change in ('destroy','covered'):
-        m=Machine(); m.page('confirminfo_dialog'); win=m.top
-        m.nodes[win]['children']=[m.node('button','img_cancel'),m.node('button','img_enter')]
-        ctx=m.alloc(256); m.byte(ctx,1); m.u.mem_write(ctx+8,b'msg_actionscan\0')
-        m.call(address=IPOD_HOOKS['dialog_confirminfo_dialog_init'][0],args=(win,ctx,0,0),gap=0)
-        if change=='destroy':
-            f,c=handler(m,win,O['EVT_DESTROY']); m.call(address=f,args=(c,m.event,0,0),gap=0)
-        else: m.page('another_page')
-        m.advance(0); assert not m.clicks and not m.timers; passed()
     for page in ('backlight_page','maxvol_page','bootvol_page','balance_page'):
         for key,name in ((O['KEY_NEXT'],'img_add'),(O['KEY_PREV'],'img_dec')):
             m=Machine(); m.page(page); target=m.node('image',name,visible=0)
@@ -5497,8 +5558,8 @@ def classic_ux_checks():
             assert sum(c[0]=='navigator_back' for c in m.calls)+immediate==int(change=='timer_failure'),change
             assert not m.timers; passed()
     m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager')
-    assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click']
-    for row in rows:
+    assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click','Shut down']
+    for row in rows[:3]:
         b=m.nodes[row]['children'][0]; title=m.nodes[b]['children'][1]
         assert ':' not in m.nodes[title]['text'] and m.nodes[title]['_setting_value'] in m.nodes[b]['children']
     assert click(2)==[(1,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Single click'; passed()
@@ -5594,18 +5655,32 @@ def classic_ux_checks():
 
 classic_ux_checks()
 m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager')
-assert len(rows)==3 and icons==['usb_chargeswitch','system_powermanager','system_keylock'] and all(m.nodes[r]['style']=='s_listitem_black' for r in rows)
-assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click']
+assert len(rows)==4 and icons==['usb_chargeswitch','system_powermanager','system_keylock','system_powermanager'] and all(m.nodes[r]['style']=='s_listitem_black' for r in rows)
+assert texts()==['Charge limit: Off','Low power: Off','Wake: Double click','Shut down']
 assert click(0)==[(1,'Q2POD','CHARGELIMIT')] and texts()[0]==f"Charge limit: {O['CHARGE_STOP']}%"
 assert click(1)==[(1,'Q2POD','LOWPOWER')] and texts()[1]=='Low power: On'
-assert click(0)==[(0,'Q2POD','CHARGELIMIT')] and texts()==['Charge limit: Off','Low power: On','Wake: Double click']
+assert click(0)==[(0,'Q2POD','CHARGELIMIT')] and texts()==['Charge limit: Off','Low power: On','Wake: Double click','Shut down']
 assert click(2)==[(1,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Single click'
 assert click(2)==[(0,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Double click'; passed()
 m,rows,texts,*_=settings_page('power','scroll_view_powermanager',{'CHARGELIMIT':'1','LOWPOWER':'1'})
-assert texts()==[f"Charge limit: {O['CHARGE_STOP']}%",'Low power: On','Wake: Double click']; passed()
+assert texts()==[f"Charge limit: {O['CHARGE_STOP']}%",'Low power: On','Wake: Double click','Shut down']; passed()
 m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager',{'SINGLEWAKE':'1'})
 assert texts()[2]=='Wake: Single click'
 assert click(2)==[(0,'Q2POD','SINGLEWAKE')] and texts()[2]=='Wake: Double click'; passed()
+# The new action runs stock's confirmation path, including its busy-state guard.
+for state in (0, 1, 2):
+    m,rows,texts,icons,click=settings_page('power','scroll_view_powermanager')
+    m.mock('awake_screen','getFormatString','navigator_to_with_context','navigator_window_is_exist')
+    m.byte(syms['g_poweroff_state'],state)
+    assert click(3)==[]
+    opened=[c for c in m.calls if c[0]=='navigator_to_with_context']
+    assert len(opened)==int(state==0)
+    if opened:
+        assert m.text(opened[0][1])=='dialog/confirminfo_dialog'
+        assert m.get(opened[0][2])==1
+        assert any(c[0]=='getFormatString' and m.text(c[1])=='msg_poweroff' for c in m.calls)
+    assert m.u.mem_read(syms['g_poweroff_state'],1)==bytes([state]); passed()
+
 m,rows,texts,icons,click=settings_page('audioset','scroll_view_playset',stock_rows=15)
 assert len(rows)==1 and icons==['playset_folderjump'] and texts()==['Artists: Artist']
 assert click(0)==[(1,'PLAYSET','ARTISTTYPE')] and m.get(syms['artist_type'])==1 and texts()==['Artists: Album Artist']

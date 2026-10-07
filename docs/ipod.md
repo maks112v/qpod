@@ -473,36 +473,36 @@ what you hear. See [internals.md](internals.md#visualizer-ipod).
 
 ## Pop-ups
 
-The confirm and choice dialogs in `patch/contexts.inc` (flag `BUTTONS`) have no list: their buttons
-sit directly in the dialog. For those, the dialog itself is the navigation surface, a kind that
-never scrolls, and its clickable descendants are the rows in UI order. The wheel moves between
-them with hard ends, Centre clicks the selected one after the usual double-press window, and the
-bar is drawn in the dialog's background: the button's own rectangle for a button narrower than half
-the dialog (the confirm pair), the full width otherwise. A new dialog starts on its first button,
-Cancel on the confirm pair.
+The choice screens in `patch/contexts.inc` use `CHOICE` for list pickers and `BUTTONS` for
+windows whose clickable descendants are the choices. Button surfaces skip the navigation header.
+The wheel selects with hard ends and never changes volume, including stock's opening-press
+lockout and busy or dark screens. Centre confirms the selected choice after the usual double-press
+window. Selection remains visible after touch. List pickers start on the current native `select`
+marker, or the first option when there is no checked option; reopening does not restore a stale
+highlight over the current setting.
 
-The native confirmation pair becomes two flat, full-width 48-pixel text buttons at y 208
-and 256. Cancel remains first and selected by default. Known prompts name the action,
-such as Delete song, Shut down or Install update; unknown prompts use Continue. The stock
-prompt, optional checkbox and result callbacks remain intact. Only scan and Bluetooth
-reconnect prompts with the simple native layout are accepted automatically on the next UI
-tick. Deletion, updates, line out and shutdown still require confirmation. Tidal's own
-confirm pop-up keeps its stock look.
+The native confirmation pair uses flat, full-width 48-pixel text buttons at y 208 and 256.
+Cancel is the default, except Scan music and Reconnect start on their action. All prompts wait for
+Centre or a tap. Known prompts name the action; unknown prompts use Continue. The stock prompt,
+optional checkbox and result callbacks remain intact. Tidal's confirm keeps its stock look. Audited choice rows have transparent backgrounds so native
+buttons cannot cover the selection bar.
 
-| Dialog                                           | Buttons                                         |
-| ------------------------------------------------ | ----------------------------------------------- |
-| `confirminfo_dialog` | `img_cancel`, `img_enter` (375x48, stacked text actions) |
-| `tidal_confirminfo_dialog` | `img_cancel`, `img_enter` (80x80, side by side) |
-| `autoshutdown_dialog`                            | `btn_cancel`                                    |
-| `tidal_quality_select_dialog`                    | four quality rows, `btn_ok`                     |
-| `tidal_sortmode_dialog`                          | three sort rows, `btn_cancel`                   |
+| Button surface | Choices |
+| --- | --- |
+| `confirminfo_dialog` | Cancel, named action |
+| `tidal_confirminfo_dialog` | Cancel, confirm |
+| `autoshutdown_dialog` | Cancel |
+| `updatemusic_dialog` | Cancel scan |
+| `tidal_quality_select_dialog` | Four quality rows, OK |
+| `tidal_sortmode_dialog` | Three sort rows, Cancel |
+| `playlistsmore_page` | Rename, Delete |
+| `tidal_more_page` | Rename, Add, Change |
+| `tidal_collectionmore_page` | Rename, Delete |
 
-`sortselect_dialog` and the search result dialogs already navigate their lists. Left out, so the
-wheel stays on the volume: the text-entry dialogs (`addplaylist`, `editwifi`, `kbwifiadd`,
-`kbwifipass`, `renameplaylist`, `searchbox`, `tidal_searchbox` and Baidu's `edit_dialog`), the Update
-Local Music progress (`updatemusic_dialog`, whose only button cancels a scan that can run for
-minutes), the pull-down quick settings (`statusbar_dialog`), and the dialogs without buttons
-(`volume_dialog`, `msginfo_dialog`, `checkfw_dialog`, `showsn_dialog`, `dialog_wifibt_test`).
+The discrete audio and system settings, local sort picker and device-removal list use the same
+wheel ownership. Browsing and search-result lists retain their existing navigation. Text entry,
+date/time and sleep-timer numeric editors keep native input; the pull-down quick settings wheel
+controls brightness. Toasts and information dialogs without choices remain outside this navigation.
 
 ## Boot
 
