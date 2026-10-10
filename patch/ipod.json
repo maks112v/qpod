@@ -302,6 +302,8 @@
     }
   },
   "selection_assets": {
+    "updatemusic_page.bin": "5d869aa310227cc07087f88f86b43423176a09f06f449b5e62942ae7802b298c",
+    "tidal/tidal_collection_track_page.bin": "6a276d967b6a50fc8788ff598a26bd371073eca553b1b71116effa401d4a2521",
     "dialog/autoshutdown_dialog.bin": "5d6dabe9a4d557a11f7720b2365ba15b0dea866658fce7db48d2b762c8aef4ad",
     "dialog/updatemusic_dialog.bin": "00caddad2d46c9e2ccaad04d6c7587bc3be8de9b5dce5a4cebed6724104380df",
     "dialog/tidal/tidal_quality_select_dialog.bin": "e2ee1ed0db14202b1a9a6fef8afc38d5e204eb42cc0e6185cf9a818ca59cc59a",

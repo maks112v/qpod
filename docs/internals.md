@@ -47,9 +47,13 @@ Stock V1.32 turns the encoder knob into key events 172/173: `encoderknob_thread_
 
 ## Supported screens and panes
 
-Navigation requires a supported top-window name from `patch/contexts.inc`, screen-on and no lock/test/guide/power-off/USB-link/Bluetooth-receive screen, and a navigable pane: a vertical `scroll_view`, a `table_client`, a `slide_menu` or, in iPod, a dialog flagged `BUTTONS`, whose buttons are its rows and which never scrolls ([ipod.md](ipod.md#pop-ups)). Horizontal and page-snapping scroll views are not candidates, so they cannot make a page look like it has two panes. When two panes are visible and neither owns the selection, the first wheel turn chooses the first pane in UI order. Later turns follow the selected pane, and tapping a row switches ownership. If both panes already hold a selection, the wheel event is left alone. Only active `pages` children are searched. The bounded walk collects at most 512 targets in a non-virtual list; virtual music tables navigate by total logical row count instead.
+Navigation requires a supported top-window name from `patch/contexts.inc`, screen-on and no lock/test/guide/power-off/USB-link/Bluetooth-receive screen, and a navigable pane: a vertical `scroll_view`, a `table_client`, a `slide_menu` or a window flagged `BUTTONS`, whose buttons are its rows and which never scrolls ([ipod.md](ipod.md#pop-ups)). Horizontal and page-snapping scroll views are not candidates, so they cannot make a page look like it has two panes. When two panes are visible and neither owns the selection, the first wheel turn chooses the first populated pane in UI order. Later turns follow the selected pane, and tapping a row switches ownership. If both panes already hold a selection, the wheel event is left alone. Only active `pages` children are searched. The bounded walk collects at most 512 targets in a non-virtual list; virtual music tables navigate by total logical row count instead.
 
 A native click chooses its pane from the actual target before walking up to the nearest collected ancestor. A successful selection clears the other pane’s selection and invalidates both panes, so the drawn selection, wheel and centre follow the row that owns the tap. Hidden, disabled and inactive-page panes remain excluded.
+
+An unowned pair prefers a pane with clickable rows over an empty placeholder. If the owning pane loses all its rows while the other pane has rows, the next wheel event transfers ownership. Text-only panes retain their pixel-scroll fallback when neither pane has clickable rows.
+
+The folder-scan table includes the enabled, visible `btn_startscan` footer as one extra logical selection after the native rows. The table's physical row count, scrollbar and scroll bounds remain native. Selecting the footer stops table momentum and draws its outline at the button's own origin; Centre dispatches its native scan callback.
 
 ## Selection
 
@@ -99,6 +103,8 @@ Wheel motion also wakes the native scrollbar of the controlled surface. `native_
 On `backlight_page`, `maxvol_page`, `bootvol_page` and `balance_page`, wheel releases dispatch a synchronous native click to `img_add` or `img_dec`, retaining stock bounds, labels and configuration writes. Quick Settings (`statusbar_dialog`) changes `slider_backlight` by one within its live min/max bounds; the slider's value setter emits `EVT_VALUE_CHANGED`, whose stock callback calls `config_lightness`. Hidden or disabled controls, window animations and pressed pointers consume the wheel without changing playback volume. The volume dialog retains stock wheel handling.
 
 ## Centre button
+
+On `manualtime_page` and `sleepshutdown_page`, the wheel steps the outlined text selector through its live options with the native `text_selector_set_selected_index`, retaining the stock value-change callbacks and date validation. A delayed single Centre advances through the fields, switching Date to Time as needed, then selects OK. Centre on OK dispatches the native confirmation click. The wheel on OK returns to the last field when turning back, or the first field when turning forward. Double-Centre keeps the stock screen-off action. Touch, other keys, page destruction and invalid input gates cancel pending advancement.
 
 A centre release arms a UI timer for `DOUBLE_CLICK_MS` (200 ms). On lists, a second release before expiry on the same live selection cancels confirmation and passes through the stock downstream key-up handler to turn the screen off; a single release dispatches exactly one synchronous click at expiry. On Now Playing, the single-release callback advances `MCL_MODE` through Order, Repeat One, Shuffle and Repeat All with `config_playmode`, while the double release takes the same screen-off path.
 

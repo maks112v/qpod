@@ -129,9 +129,9 @@ typedef struct {
     int pod_read, charge_limit, low_power, single_wake, charge_held, cpu_off, cpu_bad, cpu_marked;
     void *pod_label[4];
     unsigned charge_at, last_input, cpu_retry;
-#if IPOD
-    unsigned editor_timer;
+    unsigned editor_timer, editor_at;
     void *editor_page;
+#if IPOD
     unsigned library_page_generation;
     void *pull_page, *pull_surface;
     void *sel_w; /* the surface whose selection was last drawn: its row and centre, for Home's > */
@@ -231,18 +231,16 @@ static int ring_list(const menu_t *m) {
 }
 
 /* The view kinds load() actually navigates: a vertical scroll view, a table client, a slide
- * menu or (iPod) a BUTTONS window, which does not scroll. A horizontal or page-snapping scroll
+ * menu or a BUTTONS window, which does not scroll. A horizontal or page-snapping scroll
  * view is not a candidate, so it cannot make a page look like it has two panes. */
 static int kind(void *w) {
     const char *t = widget_get_type(w);
     if (!tk_strcmp(t, "slide_menu")) return 3;
     if (!tk_strcmp(t, "table_client")) return 2;
-#if IPOD
     if (!tk_strcmp(t, "dialog") || !tk_strcmp(t, "window")) {
         int ctx = context_id(widget_get_prop_str(w, "name", (void *)0));
         return ctx >= 0 && (contexts[ctx].flags & BUTTONS) ? 4 : 0;
     }
-#endif
     return !tk_strcmp(t, "scroll_view") && B(w, VIEW_VERTICAL) && !B(w, VIEW_HORIZONTAL) &&
                    !B(w, VIEW_SNAP)
                ? 1
@@ -381,10 +379,8 @@ static void drop_spin(void) {
 /* Input that is not navigation here: no pending confirmation and no run survive it. */
 static void drop_input(void) {
     cancel_center();
-#if IPOD
     stop_timer(&st.editor_timer);
     st.editor_page = (void *)0;
-#endif
     drop_spin();
     st.unlock_waiting = 0;
 }
@@ -501,8 +497,18 @@ static int allowed_top(void *top) {
     return top && context_id(widget_get_prop_str(top, "name", (void *)0)) >= 0;
 }
 
-/* A click identifies its pane by ancestry. On the first wheel turn, an unowned pair starts
- * with the first pane in UI order; painting and touch never choose one implicitly. */
+/* Prefer a populated row pane over an empty placeholder. Text-only panes retain pixel scrolling. */
+static int pane_rows(void *w) {
+    if (kind(w) == 2) return I(w, TABLE_ROWS) > 0;
+    void *row = (void *)0;
+    entries_t s = { &row, 0, 1, 4096 };
+    unsigned n = widget_count_children(w);
+    for (unsigned i = 0; i < n && !s.n; ++i) collect(widget_get_child(w, i), &s, 1);
+    return s.n;
+}
+
+/* A click identifies its pane by ancestry. An unowned pair starts with the first populated pane
+ * in UI order; painting and touch never choose one implicitly. */
 static void *surface_under(void *top, void *target, void **other, int wheel) {
     void *found[2] = { (void *)0, (void *)0 };
     int count = 0, aborted = 0, budget = 512;
@@ -523,7 +529,16 @@ static void *surface_under(void *top, void *target, void **other, int wheel) {
     }
     int first = widget_get_prop_int(found[0], SEL, -1) >= 0;
     int second = widget_get_prop_int(found[1], SEL, -1) >= 0;
-    if (wheel && !first && !second) return found[0];
+    if (wheel && !(first && second)) {
+        int rows[2] = { pane_rows(found[0]), pane_rows(found[1]) };
+        if (!first && !second) return !rows[0] && rows[1] ? found[1] : found[0];
+        int owner = second ? 1 : 0;
+        if (!rows[owner] && rows[1 - owner]) {
+            widget_set_prop_int(found[owner], SEL, -1);
+            widget_invalidate_force(found[owner], (void *)0);
+            return found[1 - owner];
+        }
+    }
     return first == second ? (void *)0 : (first ? found[0] : found[1]);
 }
 
@@ -706,6 +721,18 @@ static void select(menu_t *m, int id) {
         }
     }
     prop(m->w, SEL, id);
+    if (m->kind == 2 && m->rows > I(m->w, TABLE_ROWS)) {
+        int footer = index_of(m, I(m->w, TABLE_ROWS));
+        if (footer >= 0) widget_invalidate_force(m->at[footer], (void *)0);
+    }
+}
+
+static int control_available(void *w, void *top) {
+    for (int depth = 0; w && depth < 32; ++depth, w = P(w, W_PARENT)) {
+        if (!widget_get_visible(w) || !widget_get_prop_bool(w, "enable", 1)) return 0;
+        if (w == top) return 1;
+    }
+    return 0;
 }
 
 static int load_rows(menu_t *m, void *w) {
@@ -742,7 +769,23 @@ static int load_rows(menu_t *m, void *w) {
             }
         }
     }
+    /* Folder scanning has a native footer outside the virtual table. Give it the final logical
+     * index without changing the table's physical row count or recycled pool. */
+    void *top = window_manager_get_top_window(window_manager());
+    if (m->kind == 2 && top &&
+        !tk_strcmp(widget_get_prop_str(top, "name", ""), "specfolder_page")) {
+        void *footer = widget_lookup(top, "btn_startscan", 1);
+        if (control_available(footer, top) &&
+            clickable(footer) && m->n < MAX_ENTRIES && m->rows < 0x7fffffff) {
+            m->at[m->n] = footer;
+            m->id[m->n++] = m->rows++;
+        }
+    }
     return 1;
+}
+
+static int footer_row(const menu_t *m, int id) {
+    return m->kind == 2 && id == I(m->w, TABLE_ROWS) && m->rows > id;
 }
 
 #if IPOD
@@ -850,7 +893,7 @@ static int view_top(menu_t *m) {
 
 /* Largest viewport top that still shows content; the clamp bound for every glide. */
 static int max_top(menu_t *m) {
-    if (m->kind == 2) return m->rows * m->row - m->height;
+    if (m->kind == 2) return I(m->w, TABLE_ROWS) * m->row - m->height;
     return m->kind == 1 ? I(m->w, VIEW_CONTENT_H) - m->height : 0;
 }
 
@@ -907,6 +950,10 @@ static void wheel_offset(menu_t *m, int top) {
 /* Least viewport move that reveals logical row id with a small reading margin.
  * Remembered-position restoration keeps its glide; wheel steps are immediate. */
 static void reveal(menu_t *m, int id, int immediate) {
+    if (footer_row(m, id)) {
+        stop_scroll(m);
+        return; /* the fixed footer is already visible */
+    }
     int top = view_top(m);
     int y, h;
     if (m->kind == 2) {
@@ -946,6 +993,11 @@ static int reconcile(menu_t *m, int settle) {
     int id = m->kind == 3 ? slide_index(m->w) : widget_get_prop_int(m->w, SEL, -1);
     int cur = index_of(m, id);
     if (m->kind == 3) return cur;
+    if (id < 0 && m->rows == 1 && footer_row(m, 0)) {
+        select(m, 0);
+        return index_of(m, 0);
+    }
+    if (cur >= 0 && footer_row(m, id)) return cur;
     if (cur >= 0) {
         rect_t r = bounds(m, cur);
         if (r.y < m->height && r.y + r.h > 0) {
@@ -1434,6 +1486,54 @@ static void paint_cover(void *w, void *canvas) {
 }
 #endif
 
+static int field_count(void *page) {
+    const char *name = page ? widget_get_prop_str(page, "name", "") : "";
+    return !tk_strcmp(name, "manualtime_page") ? 5 : !tk_strcmp(name, "sleepshutdown_page") ? 2 : 0;
+}
+
+static void *field_target(void *page, int field) {
+    static const char *const names[] = { "tselector_year", "tselector_month", "tselector_day",
+                                        "tselector_hour", "tselector_min", "btn_enter" };
+    int count = field_count(page);
+    if (!count || field < 0 || field > count) return (void *)0;
+    int index = field == count ? 5 : count == 2 ? field + 3 : field;
+    return widget_lookup(page, names[index], 1);
+}
+
+/* A native swipe between Date and Time moves wheel ownership to that page's first field. */
+static int field_index(void *page) {
+    int count = field_count(page), field = widget_get_prop_int(page, "_wheel_field", 0);
+    field = clamp_step(field, count, 0);
+    if (count == 5 && field < count) {
+        void *slide = widget_lookup(page, "slide_view", 1);
+        int time = slide && widget_get_prop_int(slide, "value", 0) == 1;
+        if (time != (field >= 3)) field = time ? 3 : 0;
+    }
+    prop(page, "_wheel_field", field);
+    return field;
+}
+
+/* Draw at the control's own origin, including controls outside a list's clipping rectangle. */
+static void paint_control(void *w, void *canvas) {
+    void *top = window_manager_get_top_window(window_manager()), *target = (void *)0;
+    if (!w || !canvas || !usable() || !top || !P(canvas, CANVAS_LCD)) return;
+    if (field_count(top))
+        target = field_target(top, field_index(top));
+    else if (!tk_strcmp(widget_get_prop_str(top, "name", ""), "specfolder_page")) {
+        void *table = widget_lookup(top, "specfolder_table_client", 1);
+        if (table && widget_get_prop_int(table, SEL, -1) == I(table, TABLE_ROWS))
+            target = widget_lookup(top, "btn_startscan", 1);
+    }
+    if (target != w || !control_available(w, top)) return;
+    int width = I(w, W_W), height = I(w, W_H);
+    if (width < 5 || height < 5) return;
+    unsigned old = (unsigned)I(P(canvas, CANVAS_LCD), LCD_STROKE_COLOR);
+    canvas_set_stroke_color(canvas, 0xffffffff);
+    canvas_stroke_rect(canvas, 1, 1, width - 2, height - 2);
+    canvas_stroke_rect(canvas, 2, 2, width - 4, height - 4);
+    canvas_set_stroke_color(canvas, old);
+}
+
 /* Load and settle the painted surface's selection, then draw it: a neutral outline over the rows
  * in Stock, a full-width accent bar behind them in iPod.
  * The outline is one neutral white line seated on a dark shade line: the shade is the stock dark
@@ -1477,6 +1577,7 @@ static void paint_selection(void *w, void *canvas) {
     /* Browsing pages hide the selection after touch; option pickers always show it. */
     int home = top && !tk_strcmp(widget_get_prop_str(top, "name", ""), "home_page");
     if (i < 0 || (!shown && !home)) return;
+    if (footer_row(&g_menu, g_menu.id[i])) return; /* painted at the footer's own origin */
     rect_t r = bounds(&g_menu, i), old;
     /* A boundary detent nudges the selection against the end until it springs back. */
     if (fx_live(w) && st.bump_dir) r.y -= st.bump_dir * BUMP_PX;
@@ -1542,6 +1643,7 @@ int ringnav_paint(void *w, void *canvas) {
     if (st.pull_page && !pull_live()) pull_cancel();
 #endif
     int result = stock_paint_trampoline(w, canvas);
+    paint_control(w, canvas);
     coverflow_paint(w, canvas);
     photos_paint(w, canvas);
     books_paint(w, canvas);
@@ -2498,6 +2600,21 @@ static int bluetooth_device(void *button) {
 #endif
 
 int ringnav_dispatch(void *target, void *event) {
+    if (target && event && I(event, EVENT_TYPE) == EVT_POINTER_DOWN) {
+        void *top = window_manager_get_top_window(window_manager());
+        int count = field_count(top);
+        void *w = target;
+        for (int depth = 0; count && w && w != top && depth < 32; ++depth, w = P(w, W_PARENT)) {
+            for (int i = 0; i < count; ++i) {
+                if (w != field_target(top, i) || !control_available(w, top)) continue;
+                stop_timer(&st.editor_timer);
+                st.editor_page = (void *)0;
+                prop(top, "_wheel_field", i);
+                widget_invalidate_force(top, (void *)0);
+                break;
+            }
+        }
+    }
 #if IPOD
     if (st.pull_page && (!event || !pull_live() || I(event, EVENT_TYPE) == EVT_KEY_DOWN_BEFORE))
         pull_cancel();
@@ -2510,6 +2627,8 @@ int ringnav_dispatch(void *target, void *event) {
     if (target && event && I(event, EVENT_TYPE) == EVT_CLICK) {
         hide_outline();
         cancel_center(); /* A native activation supersedes confirmation, even without touch. */
+        stop_timer(&st.editor_timer);
+        st.editor_page = (void *)0;
         drop_spin();
         fx_cancel();
         void *other = (void *)0;
@@ -4121,7 +4240,6 @@ static int slider_setting(const char *name) {
            !tk_strcmp(name, "bootvol_page") || !tk_strcmp(name, "balance_page");
 }
 
-#if IPOD
 static int editor_closed(void *page, void *event) {
     (void)event;
     if (page == st.editor_page) drop_input();
@@ -4134,21 +4252,51 @@ static int editor_finish(const void *info) {
     st.editor_timer = 0;
     st.editor_page = (void *)0;
     void *wm = window_manager();
-    if (page && usable() && window_manager_get_top_window(wm) == page &&
-        !window_manager_is_animating(wm) && !window_manager_get_pointer_pressed(wm)) navigator_back();
+    if (!page || !usable() || window_manager_get_top_window(wm) != page ||
+        window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm))
+        return 0;
+    int count = field_count(page);
+    if (!count)
+        navigator_back();
+    else {
+        int field = field_index(page);
+        if (field != widget_get_prop_int(page, "_editor_field", -1)) return 0;
+        void *target = field_target(page, field);
+        if (!control_available(target, page)) return 0;
+        if (field == count) {
+            char click[0x30];
+            *(volatile unsigned char *)KEY_LOCKOUT = 0;
+            stock_dispatch_trampoline(target, pointer_event_init(click, EVT_CLICK, target, 0, 0));
+        } else {
+            *(volatile unsigned char *)KEY_LOCKOUT = 0;
+            prop(page, "_wheel_field", ++field);
+            if (count == 5 && field < count) {
+                void *slide = widget_lookup(page, "slide_view", 1);
+                if (slide) widget_set_prop_int(slide, "value", field >= 3);
+            }
+            widget_invalidate_force(page, (void *)0);
+        }
+    }
     return 0;
 }
 
 static int editor_center(void *page, void *event) {
     void *wm = window_manager();
+    unsigned now = (unsigned)time_now_ms();
     if (window_manager_is_animating(wm) || window_manager_get_pointer_pressed(wm)) {
         drop_input();
         return STOP;
     }
     if (st.editor_timer && st.editor_page == page) {
-        drop_input();
-        on_wm_keyup_fun(wm, event); /* the stock double-Centre screen-off path */
-        return STOP;
+        if (now - st.editor_at < DOUBLE_CLICK_MS) {
+            drop_input();
+            on_wm_keyup_fun(wm, event); /* the stock double-Centre screen-off path */
+            return STOP;
+        }
+        unsigned timer = st.editor_timer;
+        editor_finish(0); /* Apply an overdue single press before starting the next one. */
+        timer_remove(timer);
+        if (!usable() || window_manager_get_top_window(wm) != page) return STOP;
     }
     drop_input();
     if (!widget_get_prop_int(page, "_editor_bound", 0)) {
@@ -4156,11 +4304,47 @@ static int editor_center(void *page, void *event) {
         prop(page, "_editor_bound", 1);
     }
     st.editor_page = page;
+    st.editor_at = now;
+    if (field_count(page)) prop(page, "_editor_field", field_index(page));
     st.editor_timer = timer_add(editor_finish, 0, DOUBLE_CLICK_MS);
-    if (!st.editor_timer) editor_finish(0);
+    if (!st.editor_timer) {
+        if (field_count(page)) drop_input();
+        else editor_finish(0);
+    }
     return STOP;
 }
-#endif
+
+static int fields_key(void *page, unsigned key, void *event) {
+    int count = field_count(page);
+    if (!count) return 0;
+    if (key == KEY_CENTER) return editor_center(page, event);
+    drop_input();
+    if (window_manager_is_animating(window_manager()) ||
+        window_manager_get_pointer_pressed(window_manager()))
+        return STOP;
+    int field = field_index(page);
+    if (field == count) {
+        field = key == KEY_PREV ? count - 1 : 0;
+        prop(page, "_wheel_field", field);
+        if (count == 5) {
+            void *slide = widget_lookup(page, "slide_view", 1);
+            if (slide) widget_set_prop_int(slide, "value", field >= 3);
+        }
+    } else {
+        void *target = field_target(page, field);
+        if (control_available(target, page)) {
+            unsigned options = text_selector_count_options(target);
+            int index = I(target, SELECTOR_INDEX);
+            if (options && options <= 0x7fffffff) {
+                int next = clamp_step(index, (int)options - 1, key == KEY_NEXT ? 1 : -1);
+                if (next != index) text_selector_set_selected_index(target, (unsigned)next);
+            }
+        }
+    }
+    st.touch_mode = 0;
+    widget_invalidate_force(page, (void *)0);
+    return STOP;
+}
 
 /* Slider-only settings use their stock +/- actions, including validation and persistence.
  * Quick Settings has no +/- buttons; setting its slider fires the stock value-changed callback. */
@@ -4203,6 +4387,10 @@ int ringnav(void *ctx, void *event) {
         return 0;
     }
     unsigned key = (unsigned)I(event, EVENT_KEY);
+    if (key != KEY_CENTER) {
+        stop_timer(&st.editor_timer);
+        st.editor_page = (void *)0;
+    }
     int waking_center = key == KEY_CENTER && (!g_backlight_status || g_lockscreen_pageflag);
 #if IPOD
     /* This release's press was silenced by ringnav_keydown: a row change below clicks instead. */
@@ -4241,6 +4429,9 @@ int ringnav(void *ctx, void *event) {
         }
     }
 #endif
+    if ((key == KEY_PREV || key == KEY_NEXT) &&
+        field_count(window_manager_get_top_window(window_manager())) && usable())
+        result = 0;
     if (result) {
         cancel_center();
         if (key == KEY_PREV || key == KEY_NEXT) drop_wheel();
@@ -4287,6 +4478,7 @@ int ringnav(void *ctx, void *event) {
         np_cancel();
         return STOP;
     }
+    if (field_count(top)) return fields_key(top, key, event);
 #if IPOD
     if (key == KEY_CENTER && top && slider_setting(widget_get_prop_str(top, "name", ""))) {
         np_cancel();

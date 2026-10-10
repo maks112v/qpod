@@ -137,6 +137,8 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 - **Visualizer:** swipe Now Playing to its fourth page: Spectrum, Oscilloscope, VU Meters or Halo. Tap to switch; your choice is kept. It follows what you hear, EQ included.
 - **Quick settings:** pull down from the top edge.
 - **Slider settings:** turn the wheel to adjust brightness, maximum volume, startup volume or balance. In Quick Settings, the wheel adjusts brightness.
+- **Date/time and sleep timer:** the wheel edits the outlined field. Centre advances to the next field, then to OK; Centre on OK saves. Turn the wheel on OK to return to editing.
+- **Folder scanning:** scroll past the last folder to select Start scan, then press Centre.
 - **Shutdown:** System settings → Power management → Shut down, then confirm. Holding Centre never shuts down.
 - **Wake:** double-click Centre by default. System settings → Power management → Wake can switch to a single click, including unlocking.
 - **Page slides:** in from the right, back out on Return.

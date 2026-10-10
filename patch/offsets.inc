@@ -23,6 +23,7 @@
 #define ROW_INDEX 0x78          /* table_row logical index (same slot) */
 #define SLIDE_INDEX 0x78        /* slide_menu current index (same slot) */
 #define TABLE_ROWS 0x7c         /* table_client logical row count */
+#define SELECTOR_INDEX 0x7c     /* text_selector selected option (same slot, native setter @0x6009e0) */
 #define VIEW_CONTENT_H 0x7c     /* scroll_view content height (same slot) */
 #define SCROLL_X 0x80           /* scroll_view horizontal offset */
 #define TABLE_TOP 0x80          /* table_client viewport top (same slot) */

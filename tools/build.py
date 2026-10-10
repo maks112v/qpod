@@ -235,6 +235,8 @@ def fileoff(b, a):
     raise ValueError(f'Unmapped address {a:x}')
 
 FUNCTIONS = {
+ 'text_selector_count_options': ('unsigned', 'void *'),
+ 'text_selector_set_selected_index': ('int', 'void *, unsigned'),
  'widget_on': ('unsigned', 'void *, unsigned, int (*)(void *, void *), void *'),
  'widget_set_visible': ('int', 'void *, int, int'),
  'widget_set_opacity': ('int', 'void *, unsigned'),

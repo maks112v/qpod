@@ -141,7 +141,9 @@ class Machine:
     def byte(self,a,v): self.u.mem_write(a,bytes([v]))
     def word(self,a,v): self.u.mem_write(a,struct.pack('<I',v&0xffffffff))
     def get(self,a): return struct.unpack('<I',self.u.mem_read(a,4))[0]
-    def alloc(self,n=0x200): a=self.next; self.next+=n; return a
+    def alloc(self,n=0x200):
+        # MIPS malloc aligns objects to eight bytes, including allocations after UTF-8 buffers.
+        a=(self.next+7)&~7; self.next=a+n; return a
     def string(self,s):
         data=s.encode()+b'\0'
         a=self.alloc((len(data)+3)&~3); self.u.mem_write(a,data); return a
@@ -308,6 +310,10 @@ class Machine:
             # Stock text is VALUE_TYPE_WSTRING; value_str does not convert it to UTF-8.
             ret=0 if self.text(b)=='text' else self.string(n.get(self.text(b),''))
         elif name=='widget_get_text': ret=self.wide_string(n.get('text',''))
+        elif name=='text_selector_count_options': ret=n.get('options',0)
+        elif name=='text_selector_set_selected_index':
+            assert b<n['options']
+            self.word(a+O['SELECTOR_INDEX'],b); ret=0
         elif name=='locale_info_tr': ret=self.string(getattr(self,'translations',{}).get(self.text(b),self.text(b)))
         elif name in ('widget_get_prop_bool','widget_get_prop_int'): ret=n.get(self.text(b),c)
         elif name=='mclGetLyricSize': ret=getattr(self,'lyric_size',0)
@@ -540,6 +546,132 @@ checks=0
 def passed():
     global checks
     checks+=1
+
+def screen_navigation_checks():
+    """Wheel/Centre routes for scan actions, field editors and populated pane ownership."""
+    for name in ('updatemusic_page','tidal_collection_track_page'):
+        m=Machine()
+        if name=='updatemusic_page': w,rows=m.page_list(3,name=name)
+        else:
+            w=m.top=m.node('window',name)
+            rows=[m.entry(w,i*48) for i in range(3)]; m.nodes[w]['children']=rows
+        m.byte(syms['g_volume'],42)
+        m.paint(w); m.call(); m.advance(300); m.call()
+        assert m.selected(w)==2
+        assert m.confirm()==11 and m.clicks==[rows[2]]
+        assert m.u.mem_read(syms['g_volume'],1)==b'*'; passed()
+
+    for empty in (False,True):
+        m=Machine(); table,rs,rows=m.table_page(name='specfolder_page',rebind=True)
+        m.nodes[table]['name']='specfolder_table_client'
+        if empty: m.word(table+O['TABLE_ROWS'],0); m.nodes[table]['children']=[]
+        footer=m.entry(m.top,210); m.nodes[footer]['name']='btn_startscan'
+        m.nodes[m.top]['children'].append(footer)
+        m.paint(table)
+        if empty:
+            assert m.selected(table)==0
+            m.paint(footer); assert m.drawn()
+            assert m.confirm()==11 and m.clicks==[footer]
+            m.clicks=[]
+        for _ in range(21): m.call()
+        assert m.selected(table)==(0 if empty else 20)
+        assert m.get(table+O['TABLE_TOP'])<=864, 'Footer must not extend native table scroll bounds'
+        m.paint(footer); assert m.drawn()
+        assert m.confirm()==11 and m.clicks==[footer]
+        if not empty:
+            m.call(O['KEY_PREV']); assert m.selected(table)==19
+            m.paint(footer); assert not m.drawn()
+            m.call(); assert m.selected(table)==20
+            m.call(O['KEY_CENTER']); m.nodes[footer]['enable']=0
+            m.advance(200); assert m.clicks==[footer], 'A disabled footer must reject pending confirmation'
+        passed()
+
+    for stale in (False,True):
+        m=Machine(); a,b,ae,be=m.panes(); m.nodes[m.top]['name']='netdiskdownload_page'
+        m.nodes[a]['children']=[]
+        if stale: m.nodes[a]['_ringnav_index']=2
+        assert m.call()==11 and m.selected(b)==1 and m.selected(a)==-1
+        assert m.get(a+O['SCROLL_Y'])==0
+        assert m.confirm()==11 and m.clicks==[be[1]]; passed()
+    m=Machine(); a,b,ae,be=m.panes(); m.nodes[b]['children']=[]
+    m.nodes[b]['_ringnav_index']=1
+    assert m.call()==11 and m.selected(a)==1 and m.selected(b)==-1
+    assert m.confirm()==11 and m.clicks==[ae[1]]; passed()
+
+    for name,count in (('manualtime_page',5),('sleepshutdown_page',2)):
+        m=Machine(); m.top=m.node('window',name)
+        names=['tselector_year','tselector_month','tselector_day','tselector_hour','tselector_min']
+        selectors=[m.node('text_selector',s,options=3) for s in (names if count==5 else names[3:])]
+        slide=m.node('slide_view','slide_view',value=0)
+        footer=m.entry(m.top); m.nodes[footer]['name']='btn_enter'
+        m.nodes[m.top]['children']=selectors+[slide,footer]
+        for s in selectors:
+            m.word(s+O['W_PARENT'],m.top); m.word(s+O['SELECTOR_INDEX'],0)
+        m.word(slide+O['W_PARENT'],m.top)
+        m.byte(syms['g_volume'],42)
+        for i,s in enumerate(selectors):
+            m.paint(s); assert m.drawn()
+            m.nodes[s]['enable']=0
+            m.call(); assert m.get(s+O['SELECTOR_INDEX'])==0
+            m.confirm(); assert m.nodes[m.top]['_wheel_field']==i
+            m.nodes[s]['enable']=1
+            for _ in range(4): assert m.call()==11
+            assert m.get(s+O['SELECTOR_INDEX'])==2
+            for _ in range(4): m.call(O['KEY_PREV'])
+            assert m.get(s+O['SELECTOR_INDEX'])==0
+            assert m.confirm()==11 and not m.clicks
+            assert m.nodes[m.top]['_wheel_field']==i+1
+        m.paint(footer); assert m.drawn()
+        assert m.confirm()==11 and m.clicks==[footer]
+        assert m.u.mem_read(syms['g_volume'],1)==b'*'; passed()
+        # Returning from OK chooses an editable field without changing its value.
+        m.call(O['KEY_PREV']); assert m.nodes[m.top]['_wheel_field']==count-1
+        m.confirm(); m.call(); assert m.nodes[m.top]['_wheel_field']==0
+        # Native touch makes the touched field own subsequent wheel input.
+        if count==5: m.nodes[slide]['value']=1
+        m.call(address=HOOKS['widget_dispatch'][0],args=(selectors[-1],m.event,0,0),
+               event_type=O['EVT_POINTER_DOWN'],gap=0)
+        m.call(); assert m.get(selectors[-1]+O['SELECTOR_INDEX'])==1
+        assert m.nodes[m.top]['_wheel_field']==count-1
+        passed()
+        # Touch cancels a pending field advance; double-Centre retains screen-off.
+        m.nodes[m.top]['_wheel_field']=0; m.nodes[slide]['value']=0
+        m.call(O['KEY_CENTER']); m.now+=DC+1
+        m.call(O['KEY_CENTER'],gap=0)
+        assert m.nodes[m.top]['_wheel_field']==1 and not m.screens
+        m.advance(DC); assert m.nodes[m.top]['_wheel_field']==2
+        m.nodes[m.top]['_wheel_field']=0; m.nodes[slide]['value']=0
+        m.call(O['KEY_CENTER'])
+        m.call(address=HOOKS['on_wm_tsdown_before_fun'][0],event_type=O['EVT_POINTER_DOWN'],gap=0)
+        m.advance(200)
+        assert m.nodes[m.top]['_wheel_field']==0
+        m.release(); m.release(gap=100)
+        assert m.u.mem_read(syms['g_backlight_status'],1)==b'\0'; passed()
+
+screen_navigation_checks()
+
+# Execute the native selector count and setter, including the events that update date bounds.
+class NativeSelectorMachine(Machine):
+    def __init__(self):
+        super().__init__(); self.values=[]
+        for name in ('text_selector_count_options','text_selector_set_selected_index'):
+            self.handlers.pop(syms[name],None)
+    def hook(self,u,address,size,unused):
+        if self.handlers.get(address)=='stock_dispatch':
+            self.values.append(self.get(u.reg_read(UC_MIPS_REG_A1)))
+        super().hook(u,address,size,unused)
+
+m=NativeSelectorMachine(); selector=m.node('text_selector')
+options=[m.alloc(16) for _ in range(3)]
+for i,opt in enumerate(options):
+    m.word(opt,i+10); m.word(opt+4,options[i+1] if i<2 else 0)
+    m.word(opt+8,m.string(str(i+10)))
+m.word(selector+0xf4,options[0]); m.word(selector+0x78,5); m.word(selector+0xe8,170)
+assert m.call(address=syms['text_selector_count_options'],args=(selector,0,0,0))==3
+m.call(address=syms['text_selector_set_selected_index'],args=(selector,2,0,0))
+assert m.get(selector+O['SELECTOR_INDEX'])==2 and m.values==[13,14]
+assert m.call(address=syms['text_selector_set_selected_index'],args=(selector,3,0,0))==16
+assert m.get(selector+O['SELECTOR_INDEX'])==2 and m.values==[13,14]; passed()
 
 # Now Playing More keeps its stock queue and Add to playlist rows, and opens the playlist
 # manager in browsing mode. The existing picker uses mode 2 and remains stock.

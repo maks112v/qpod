@@ -1,6 +1,6 @@
 /* Audited top windows: the name is the navigation allowlist, the class decides whether and how
  * position memory restores, RING marks a row list that carries over at the ends, and DRILL (iPod)
- * one whose rows open another list but draw no stock chevron (list_into). BUTTONS (iPod) marks a
+ * one whose rows open another list but draw no stock chevron (list_into). BUTTONS marks a
  * window with no list: its own buttons are the rows. CHOICE marks an option picker whose wheel
  * is reserved for selection, including stock's opening-press lockout.
  * The builder rejects any name that is not a window name in the stock rootfs. CTX_DYNAMIC pages
@@ -40,12 +40,15 @@
 { "replaygain_page", CTX_FIXED, CHOICE },
 { "usbvol_page", CTX_FIXED, CHOICE },
 { "specfolder_page", CTX_DYNAMIC, 0 },
+{ "updatemusic_page", CTX_FIXED, 0 },
 { "stream_page", CTX_DYNAMIC, 0 },
 { "about_page", CTX_FIXED, 0 },
 { "autotime_page", CTX_FIXED, CHOICE },
 { "bluetooth_page", CTX_DYNAMIC, 0 },
 { "btquality_page", CTX_FIXED, CHOICE },
 { "datetime_page", CTX_FIXED, CHOICE },
+{ "manualtime_page", CTX_DYNAMIC, 0 },
+{ "sleepshutdown_page", CTX_DYNAMIC, 0 },
 { "display_page", CTX_FIXED, 0 },
 { "fwupdate_page", CTX_FIXED, 0 },
 { "keylock_page", CTX_FIXED, CHOICE },
@@ -68,6 +71,7 @@
 { "tidal_main_page", CTX_DYNAMIC, 0 },
 { "tidal_music_class_page", CTX_DYNAMIC, 0 },
 { "tidal_mycollection_page", CTX_DYNAMIC, 0 },
+{ "tidal_collection_track_page", CTX_DYNAMIC, BUTTONS },
 { "tidal_playmore_page", CTX_DYNAMIC, 0 },
 { "tidal_user_loginout_page", CTX_DYNAMIC, 0 },
 { "tidal_viewall_page", CTX_DYNAMIC, 0 },
