@@ -163,6 +163,16 @@ the bar and writes the time into `label_clock` (see
 [internals.md](internals.md#status-bar-ipod)); the widest text, `12:59 PM`, is 86 pixels in the
 stock font at 20 pixels.
 
+**Title.** As on the iPod, the label names the page you are on: Settings, Audio settings, Artists,
+an album, a book, PEQ Band 3 Gain, and Now Playing on Now Playing, including under its volume
+overlay. Home keeps the time. The title is 16 pixels
+(`BAR_TITLE_PX`) and takes the width the shown icons leave, so a typical title fits in full. The
+payload's own pages (Coverflow's track list, Photos, Books, Videos, PEQ, Most Played and the
+settings lists it adds) therefore have no title bar of their own: their lists start under the
+status bar, a Photos grid is centred in the client area, and an empty page shows its message in
+the middle. A long message, such as Coverflow's artwork progress or a PEQ error, still gets its own
+line on the page.
+
 **Codec.** The Bluetooth images are 42-pixel canvases with their ink at the right: the glyph takes
 10 pixels, while stock's codec badges take up to 40 (aptX HD). A new badge shows for a second
 (`CODEC_MS`), then fades out and the white Bluetooth glyph (`bar_btcon`) fades in at the same place,
@@ -369,6 +379,24 @@ the highlighted row's, so it moves with the selection bar. Tiles narrower
 than half the list (playlist Import/Export) get none. The artist page's Albums tab drills but has
 no stock chevron or payload row layouter, so it has none.
 
+## Album tracks
+
+An album's songs list as the iPod's, on the Library's album page and Coverflow's alike: each track's
+number in grey in its own column (disc and track, "2-3", on a multi-disc album), then the title. The
+artist line shows only on a compilation; otherwise the title sits alone, centred in its row. The
+playing track has a small white play mark at the row's right end, where drill rows have their
+chevron, and the mark follows playback while the list is shown. Coverflow's rows are 48 pixels, 64
+on a compilation; the album page keeps the local lists' 72-pixel rows and its Play all bar. Payload
+lists (Coverflow's tracks, Books, Photos albums, Most Played, Library tools) are left-aligned, as the
+native lists are.
+
+## Scroll position
+
+A list that scrolls shows a slim bar along its right edge: a 3-pixel dark track with a grey thumb
+for the rows in view, between the glass's top and bottom corners. It is always there, not only while
+the list moves, so you can see where you are in a long library list at a glance. Grids, Home and
+lists that fit on one screen have none.
+
 ## Fast-scroll letter
 
 Spinning quickly through a list of more than 16 rows shows the first character of the selected
@@ -414,12 +442,13 @@ over the image in the page's black, with an anti-aliased edge pixel. The title i
 white (`NP_TITLE_PX`); artist, album, "3 of 12" and both times are the stock secondary grey
 `#AAAAAA`. Long lines scroll, as stock.
 
-Centre cycles only the bottom band: progress, seeking, then playback mode. After wheel seeking,
-the next Centre press returns to progress instead. Seeking adds a white
-position thumb and a small Seek label between the times. Playback mode uses centred white text
-and separate mirrored chevrons at the band's ends, without brackets, a decorative panel or extra
-animation. The artwork and metadata stay in place. The wheel selects the four existing modes;
-double-click locking and native touch seeking are unchanged.
+Centre cycles only the bottom band, as the iPod's: progress, seeking, Shuffle, then Repeat. After
+wheel seeking, the next Centre press returns to progress instead. Seeking adds a white
+position thumb and a small Seek label between the times. Shuffle (Off, Songs, Albums, All) and
+Repeat (Off, One, All) use centred white text, "Repeat: One", and separate mirrored chevrons at the
+band's ends, without brackets, a decorative panel or extra animation. Repeat One keeps the Shuffle choice. With Shuffle off, Repeat All restarts the queue and
+Repeat Off stops at its end. Shuffle loops even with Repeat Off. The artwork and metadata stay in place; double-click locking and native touch seeking
+are unchanged.
 The top row retains Favourite. More is hidden and moved off-screen; holding Centre opens its menu
 through the retained stock callback. The redundant mode button is hidden, disabled and moved
 off-screen, but remains allocated for stock's mode-icon updates by name.
@@ -439,7 +468,7 @@ is stock's label; the remaining time replaces stock's total. Sizes are `NP_*` co
 **Centre button.** A short press selects the next bottom control. After changing Seek with the
 wheel, it returns to Progress. A double press within `DOUBLE_CLICK_MS` (200 ms) cancels the
 pending control change and turns the screen off. The wheel controls volume only in Progress;
-Seek and Playback mode use it for their selected option. Touch seeking remains available.
+Seek, Shuffle and Repeat use it for their selected option. Touch seeking remains available.
 
 The top row's text and icons, the bar's ends and the times keep clear of the corners
 ([Rounded corners](#rounded-corners)).

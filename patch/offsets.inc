@@ -115,6 +115,21 @@
  * highlight. TRACK_COLOR is the Now Playing progress track. */
 #define BAR_COLOR 0x242424
 #define TRACK_COLOR 0x1c1c1c
+/* iPod list scroll bar (navigation.c paint_scrollbar): SCROLLBAR_W wide, SCROLLBAR_INSET from the right
+ * edge, between screen rows SCROLLBAR_TOP and SCROLLBAR_BOTTOM, where it clears the glass's corners;
+ * the thumb is at least SCROLLBAR_MIN high. */
+#define SCROLLBAR_W 3
+#define SCROLLBAR_INSET 6
+#define SCROLLBAR_TOP 60
+#define SCROLLBAR_BOTTOM 260
+#define SCROLLBAR_MIN 16
+#define SCROLLBAR_TRACK 0x2b2b2b
+#define SCROLLBAR_THUMB 0xaaaaaa
+/* iPod album page rows (navigation.c album_rows): the track number's column and the gap after it;
+ * the playing mark starts ALBUM_MARK_X into the chevron's CHEVRON_W column. */
+#define ALBUM_NO_W 32
+#define ALBUM_NO_GAP 10
+#define ALBUM_MARK_X 18
 #define NP_TIMES_PX 14 /* Now Playing's times, and the volume text in their place */
 #define NP_ART_RADIUS 12 /* Now Playing's art corners (paint_cover), as stock's play_defaultcover scaled to the art */
 #define VOL_POLL_MS 50 /* how often the volume indicator checks for a change */
@@ -131,6 +146,9 @@
 /* iPod status bar clock: never nearer the screen edge than CLOCK_EDGE, where its 20px text clears
  * the top corners (test/build.py). */
 #define CLOCK_EDGE 57
+/* Other pages show their title there instead, at this size so a typical title fits its width. */
+#define BAR_TITLE_PX 16
+#define CLOCK_GAP_PX 4 /* the label's clearance from either icon group */
 /* iPod status bar battery (docs/ipod.md#status-bar-and-clock, tools/ipod.py status_bar): stock's
  * percentage label BATT_PCT_W wide ("100%" at BATT_PCT_PX), or the payload's battery: a BATT_BODY_W x BATT_BODY_H
  * outline centred in the bar, square-cut corners, a BATT_NUB_W x BATT_NUB_H nub and the level in
@@ -340,8 +358,14 @@
 #define CF_REFLECT_TOP 64
 #define CF_STRIDE 110
 #define CF_TEXT_Y 212 /* the album caption's top, under the frame; the artist follows */
-/* Photos (patch/photos.c, docs/internals.md#photos): under a 48px title, PH_COLS columns of
- * PH_TILE_W x PH_TILE_H tiles from x PH_GRID_X, three whole rows in the 240px below it, each a
+/* Coverflow's album track rows (coverflow.c to_tracks): the number's column, the gap after it, and
+ * the playing mark's at the row's end. */
+#define TRACK_NO_W 32
+#define TRACK_GAP 10
+#define TRACK_MARK_W 20
+/* Photos (patch/photos.c, docs/internals.md#photos): PH_COLS columns of PH_TILE_W x PH_TILE_H
+ * tiles from x PH_GRID_X, three whole rows in the PH_GRID_H view, at PH_GRID_Y on iPod (centred in
+ * the client area, its title in the status bar) and under a 48px title on Stock, each a
  * thumbnail of at most PH_THUMB_W x PH_THUMB_H centred in its tile, so the selection shows round
  * it. The viewer's screen-size copy fits PH_SHOT_W x PH_SHOT_H (the client area). PH_GREY marks a
  * thumbnail not made yet or a file that will not open. */
@@ -349,13 +373,15 @@
 #define PH_GRID_X 1
 #define PH_TILE_W 93
 #define PH_TILE_H 80
+#define PH_GRID_H 240
+#define PH_GRID_Y 25 /* iPod; Stock's sits under its title bar */
 #define PH_THUMB_W 85
 #define PH_THUMB_H 72
 #define PH_SHOT_W 375
 #define PH_SHOT_H 290
 #define PH_GREY 0xff333333 /* color_t #333333 */
 #define PHOTOS_MAX 500 /* ponytail: ringnav navigates at most MAX_ENTRIES (512) rows; page beyond */
-/* PEQ editor (patch/peq_ui.c): on the main and band screens a PEQ_GRAPH_H view under the title
+/* PEQ editor (patch/peq_ui.c): on the main, band and value screens a PEQ_GRAPH_H view at the top
  * holds the response from PEQ_GRAPH_X to 375 - PEQ_GRAPH_X (20 Hz to 20 kHz, log), +-PEQ_GRAPH_DB at
  * its plot's top and bottom (rows PEQ_PLOT_TOP to PEQ_PLOT_BOTTOM), frequency labels under it. */
 #define PEQ_GRAPH_H 96

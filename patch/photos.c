@@ -12,6 +12,11 @@
 #define PH_HEAD 4096      /* bytes read for the EXIF orientation; IFD0 sits at the start */
 #define PH_TILE_SLOTS 32  /* decoded thumbnails kept: three rows on screen and some either side */
 #define PH_BAD 9          /* state: the file will not open */
+#define PH_SLIDE_MS 3000  /* the slideshow's time on each photo */
+#if !IPOD
+#undef PH_GRID_Y
+#define PH_GRID_Y 48 /* under Stock's title bar */
+#endif
 
 enum { ALBUMS, GRID, VIEWER };
 typedef struct {
@@ -27,9 +32,9 @@ static struct {
     char **path;                   /* the open grid's photos */
     unsigned *key;                 /* their cache keys */
     volatile unsigned char *state; /* 0 pending, 1-8 ready (the EXIF orientation), PH_BAD */
-    int n, screen, target, current, info_on, space, cursor, seen;
+    int n, screen, target, current, info_on, space, cursor, seen, show; /* show: the slideshow runs */
     unsigned long thread;
-    unsigned timer, poll;
+    unsigned timer, poll, show_timer;
     int running;
     volatile int done, cancel, want, finished;
     slot_t tiles[PH_TILE_SLOTS], shots[3];
@@ -249,13 +254,14 @@ static int to_grid(const void *unused) {
     widget_set_visible(ph.albums, 0, 0);
     widget_destroy_children(ph.grid);
     widget_set_visible(ph.grid, 1, 0);
-    page_title(ph.grid, !n           ? "No photos"
+    void *title = page_title(ph.grid, !n           ? "No photos"
                         : a >= 0     ? ph.album[a]
                         : ph.nalbums ? "All Photos"
                                      : "Photos");
     /* A bare scroll view: a list_view would lay its children out as full-width rows. */
     int rows = (n + PH_COLS - 1) / PH_COLS;
-    ph.view = scroll_view_create(ph.grid, 0, 48, 375, 240);
+    if (!n) page_empty(title, 290);
+    ph.view = scroll_view_create(ph.grid, 0, PH_GRID_Y, 375, PH_GRID_H);
     widget_set_prop_int(ph.view, "yslidable", 1);
     widget_set_prop_int(ph.view, "xslidable", 0);
     widget_set_prop_int(ph.view, "virtual_h", rows * PH_TILE_H);
@@ -335,13 +341,15 @@ static int to_viewer(const void *unused) {
 /* Back from the viewer: the grid with the photo last shown selected and in view. */
 static void to_tiles(void) {
     ph.screen = GRID;
+    ph.show = ph.info_on = 0;
+    stop_timer(&ph.show_timer);
     ph.want = -1;
     widget_set_visible(ph.viewer, 0, 0);
     widget_set_visible(ph.grid, 1, 0);
     ringnav_select(ph.view, ph.current, ph.n);
     int y = ph.current / PH_COLS * PH_TILE_H, top = I(ph.view, SCROLL_Y);
     if (y < top) top = y;
-    if (y + PH_TILE_H > top + 240) top = y + PH_TILE_H - 240;
+    if (y + PH_TILE_H > top + PH_GRID_H) top = y + PH_TILE_H - PH_GRID_H;
     scroll_view_set_offset(ph.view, 0, top);
     widget_invalidate_force(ph.page, 0);
 }
@@ -361,10 +369,28 @@ static int open_tile(void *ctx, void *event) {
     return 0;
 }
 
+/* The slideshow steps the viewer on while it shows on a lit, unlocked screen; it stops with the viewer. */
+static int advance(const void *unused) {
+    (void)unused;
+    if (!ph.show || ph.screen != VIEWER) {
+        ph.show_timer = 0;
+        ph.show = 0;
+        return 7; /* RET_REMOVE */
+    }
+    if (g_backlight_status && !g_lockscreen_pageflag &&
+        window_manager_get_top_window(window_manager()) == ph.page)
+        slide_menu_scroll_to_next(ph.slide);
+    return 8; /* RET_REPEAT */
+}
+
+/* Centre or a tap plays or pauses the slideshow; the caption names the photo while it is paused. */
 static int toggle_info(void *ctx, void *event) {
     (void)ctx;
     (void)event;
-    ph.info_on = !ph.info_on;
+    ph.show = !ph.show;
+    ph.info_on = !ph.show;
+    stop_timer(&ph.show_timer);
+    if (ph.show) ph.show_timer = timer_add(advance, 0, PH_SLIDE_MS);
     info();
     return 0;
 }
@@ -401,6 +427,7 @@ static int closed(void *ctx, void *event) {
     ph.viewer = 0; /* going with the page */
     drop_photos();
     stop_timer(&ph.timer);
+    stop_timer(&ph.show_timer);
     for (int k = 0; k < ph.nalbums; ++k) free(ph.album[k]);
     free(ph.album);
     memset(&ph, 0, sizeof ph);
@@ -441,12 +468,11 @@ static slot_t *slot(slot_t *s, int count, int box, int i, const char *suffix) {
     return pick;
 }
 
-/* The bottom caption of a page h high: above the rounded glass's bottom corners, dark under white
- * so it reads over any photo. Shared with books.c. */
+/* The bottom caption of a page h high: a flat band above the rounded glass's bottom corners, dark
+ * under white so it reads over any photo. Shared with books.c. */
 void *bottom_caption(void *parent, int h) {
     void *label = text(parent, CF_EDGE, h - 56, 375 - 2 * CF_EDGE, 36);
     widget_set_prop_int(label, "style:normal:bg_color", (int)0xb3000000u);
-    widget_set_prop_int(label, "style:normal:round_radius", 8);
     return label;
 }
 

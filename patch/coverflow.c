@@ -47,8 +47,12 @@ static struct {
     unsigned timer;
     unsigned saved_album, albums_gen; /* albums_gen: library_gen when albums was queried */
     int screen, album, running;
+    void *track_view; /* the album's track rows (TRACKS) */
+    int track_h, playing; /* their height, and the playing one's index + 1 when last painted */
     volatile int done, total, cancel;
 } cf __attribute__((section(".scratch")));
+void *queue_now(unsigned *pos, unsigned *n);
+static void track_mark(void *w, void *canvas);
 
 static int pick(void *ctx, void *event);
 
@@ -409,23 +413,40 @@ void *page_open(const char *name, int (*closed)(void *, void *), int (*keyup)(vo
     return page;
 }
 
-/* A page's 48px title bar; shared with photos.c. */
+/* A page's title, named page_title. iPod shows it in the status bar (navigation.c clock_sync), so
+ * the label is hidden and the page starts under the bar; Stock keeps a TITLE_H title bar. Shared with
+ * photos.c. */
+#if IPOD
+#define TITLE_H 0
+#else
+#define TITLE_H 48
+#endif
 void *page_title(void *body, const char *caption) {
-    void *title = text(body, CF_X, 0, CF_W, 48);
+    void *title = text(body, CF_X, 0, CF_W, TITLE_H ? TITLE_H : 48);
+    widget_set_name(title, "page_title");
+    widget_set_visible(title, TITLE_H != 0, 0);
     display_text(title, caption);
     return title;
 }
 
-/* The peq_ui.c page: a title bar (*title, unless 0) over n whole item_h rows in body, shrunk so the list's
+/* An empty page shows its title as the message, centred in h, where iPod has no title bar. */
+void page_empty(void *title, int h) {
+    if (TITLE_H) return;
+    widget_move_resize(title, CF_X, 0, CF_W, h);
+    widget_set_visible(title, 1, 0);
+}
+
+/* The peq_ui.c page: a title (*title, unless 0) over n whole item_h rows in body, shrunk so the list's
  * white background never shows below a short list. Shared with photos.c. */
 void *page_list(void *page, void *body, void **title, const char *caption, int n, int item_h) {
-    int h = widget_get_prop_int(page, "h", 290), rows = (h - 48) / item_h * item_h;
+    int h = widget_get_prop_int(page, "h", 290), rows = (h - TITLE_H) / item_h * item_h;
     if (n * item_h < rows) rows = n * item_h;
     widget_destroy_children(body);
     widget_set_visible(body, 1, 0);
     void *t = page_title(body, caption);
     if (title) *title = t;
-    void *lv = list_view_create(body, 0, 48, 375, rows);
+    if (!n) page_empty(t, h);
+    void *lv = list_view_create(body, 0, TITLE_H, 375, rows);
     widget_set_prop_int(lv, "item_height", item_h);
     /* The theme's default list_view is a light card; stock pages paint theirs black inline. */
     widget_set_prop_int(lv, "style:normal:bg_color", (int)0xff000000u);
@@ -442,6 +463,21 @@ static void *list(const char *title, int n) {
     return page_list(cf.page, cf.body, &cf.title, title, n, 48);
 }
 
+/* A row's text, left-aligned as list rows are; text() centres captions. */
+static void *row_text(void *item, int x, int y, int w, int h) {
+    void *label = text(item, x, y, w, h);
+    widget_set_prop_int(label, "style:normal:text_align_h", 2); /* ALIGN_H_LEFT */
+    return label;
+}
+
+/* A 64px row's second line: 16px #AAAAAA, stock's s_scrlabel_gray24l grey. */
+static void *row_detail(void *item, int x, int w) {
+    void *label = row_text(item, x, 36, w, 24);
+    widget_set_prop_int(label, "style:normal:text_color", (int)CF_GREY);
+    widget_set_prop_int(label, "style:normal:font_size", 16);
+    return label;
+}
+
 /* One 48px row of a page_list or, with a detail (navigation.c's Most Played), a 64px one: the caption
  * over the detail in 16px #AAAAAA, stock's s_scrlabel_gray24l grey. Shared with photos.c. */
 void page_row_detail(void *view, int index, const char *caption, const char *detail,
@@ -449,14 +485,9 @@ void page_row_detail(void *view, int index, const char *caption, const char *det
     int h = detail ? 64 : 48;
     void *item = list_item_create(view, 0, index * h, 375, h);
     widget_use_style(item, "s_listitem_black");
-    void *label = text(item, CF_ROW_X, detail ? 4 : 0, CF_ROW_W, detail ? 32 : 48);
+    void *label = row_text(item, CF_ROW_X, detail ? 4 : 0, CF_ROW_W, detail ? 32 : 48);
     display_text(label, caption);
-    if (detail) {
-        label = text(item, CF_ROW_X, 36, CF_ROW_W, 24);
-        widget_set_prop_int(label, "style:normal:text_color", (int)0xffaaaaaau);
-        widget_set_prop_int(label, "style:normal:font_size", 16);
-        display_text(label, detail);
-    }
+    if (detail) display_text(row_detail(item, CF_ROW_X, CF_ROW_W), detail);
     widget_on(item, EVT_CLICK, click, (void *)(long)index);
 }
 
@@ -615,6 +646,7 @@ int visual(void *s, int n, int *c, int *frac) { /* shared with photos.c */
  * position or a texture has changed. */
 void coverflow_paint(void *w, void *canvas) {
     int c, frac, n;
+    if (w) track_mark(w, canvas);
     if (!w || w != cf.slide || !fx.frame || cf.screen != COVERS ||
         !visual(w, n = (int)widget_count_children(w), &c, &frac))
         return;
@@ -771,6 +803,7 @@ static void load(void) {
         cf.running = 1;
         cf.screen = PREPARING;
         page_row_detail(list("", 1), 0, "Cancel", 0, cancel_row);
+        page_empty(cf.title, 290); /* the progress, too long for the status bar */
         poll(0);
     } else
         to_covers(0);
@@ -868,6 +901,16 @@ static const char *album_track_name(char *buf, unsigned size, void *t) {
                              number == (unsigned)I(t, REC_TRACK)) ? s : name;
 }
 
+/* Whether t is the queue's current track (its path and CUE start). */
+static int playing_track(void *t) {
+    unsigned at, n;
+    void *r = queue_now(&at, &n);
+    return r && t && !tk_strcmp(P(r, REC_PATH), P(t, REC_PATH)) &&
+           I(r, REC_CUE_START) == I(t, REC_CUE_START);
+}
+
+/* An album's tracks, as the iPod's: each number grey in its own column, then the title, and on a
+ * compilation the artist under it. The playing track gets a mark at the right (coverflow_paint). */
 static int to_tracks(const void *unused) {
     (void)unused;
     cf.timer = 0;
@@ -881,11 +924,56 @@ static int to_tracks(const void *unused) {
     n = (int)deque_size(cf.tracks);
     cf.screen = TRACKS;
     widget_set_visible(cf.covers, 0, 0);
-    void *view = list(P(r, REC_ALBUM), n);
-    for (int i = 0; i < n; ++i)
-        page_row_detail(view, i, album_track_name(name, sizeof name, deque_at(cf.tracks, (unsigned)i)), 0,
-                        play);
+    int discs = 0, mixed = 0;
+    const char *first = n ? P(deque_at(cf.tracks, 0), REC_ARTIST) : 0;
+    for (int i = 0; i < n; ++i) {
+        void *t = deque_at(cf.tracks, (unsigned)i);
+        discs |= I(t, REC_DISC) > 1;
+        mixed |= tk_strcmp(P(t, REC_ARTIST) ? P(t, REC_ARTIST) : "", first ? first : "") != 0;
+    }
+    cf.track_h = mixed ? 64 : 48;
+    cf.playing = 0;
+    void *view = cf.track_view = page_list(cf.page, cf.body, &cf.title, P(r, REC_ALBUM), n, cf.track_h);
+    for (int i = 0; i < n; ++i) {
+        void *t = deque_at(cf.tracks, (unsigned)i);
+        void *item = list_item_create(view, 0, i * cf.track_h, 375, cf.track_h);
+        widget_use_style(item, "s_listitem_black");
+        char number[16] = "";
+        int track = I(t, REC_TRACK) > 0 ? I(t, REC_TRACK) : i + 1;
+        if (discs && I(t, REC_DISC) > 0) snprintf(number, sizeof number, "%d-%d", I(t, REC_DISC), track);
+        else snprintf(number, sizeof number, "%d", track);
+        int y = mixed ? 4 : 0, h = mixed ? 32 : 48, x = CF_ROW_X + TRACK_NO_W + TRACK_GAP;
+        int w = CF_ROW_W - TRACK_NO_W - TRACK_GAP - TRACK_MARK_W;
+        display_text(row_text(item, x, y, w, h), album_track_name(name, sizeof name, t)); /* first */
+        void *label = text(item, CF_ROW_X, y, TRACK_NO_W, h);
+        widget_set_prop_int(label, "style:normal:text_align_h", 3); /* ALIGN_H_RIGHT */
+        widget_set_prop_int(label, "style:normal:text_color", (int)CF_GREY);
+        widget_set_prop_int(label, "style:normal:font_size", 16);
+        display_text(label, number);
+        if (mixed) display_text(row_detail(item, x, w), P(t, REC_ARTIST));
+        widget_on(item, EVT_CLICK, play, (void *)(long)i);
+    }
     return 0;
+}
+
+/* The mark on the playing track's row: a small play triangle in the text's white, centred in the
+ * row's last TRACK_MARK_W pixels. */
+static void track_mark(void *w, void *canvas) {
+    if (cf.screen != TRACKS || !cf.track_view || P(w, W_PARENT) != cf.track_view || !cf.track_h ||
+        !P(canvas, CANVAS_LCD))
+        return;
+    int i = I(w, W_Y) / cf.track_h;
+    if (i < 0 || i >= (int)deque_size(cf.tracks) || !playing_track(deque_at(cf.tracks, (unsigned)i)))
+        return;
+    cf.playing = i + 1;
+    unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
+    int x = CF_ROW_X + CF_ROW_W - TRACK_MARK_W + (TRACK_MARK_W - 8) / 2, cy = cf.track_h / 2;
+    canvas_set_fill_color(canvas, 0xffffffffu);
+    for (int c = 0; c < 8; ++c) { /* 8 wide, 10 high at its base */
+        int half = 5 - (c * 5 + 4) / 8;
+        canvas_fill_rect(canvas, x + c, cy - half, 1, 2 * half + (half ? 0 : 1));
+    }
+    canvas_set_fill_color(canvas, fill);
 }
 
 static int refresh(const void *unused) {
@@ -949,7 +1037,7 @@ static int closed(void *ctx, void *event) {
     (void)event;
     if (cf.saved_album) BLOB_IO(LAST_ALBUM, cf.saved_album, 1);
     drop();
-    cf.page = cf.body = cf.covers = cf.slide = 0;
+    cf.page = cf.body = cf.covers = cf.slide = cf.track_view = 0;
     return 0;
 }
 
@@ -1017,6 +1105,15 @@ static void home_fit(unsigned w, unsigned h) {
  * whenever Home or the status bar paints (at least once a second) and reloads only when the track,
  * the cover it can use or its parsed tags change. */
 void coverflow_home_art(void *top) {
+    if (top && top == cf.page && cf.screen == TRACKS && cf.track_view) {
+        int playing = 0; /* the album's tracks keep their mark on the playing one */
+        for (int i = 0; !playing && i < (int)deque_size(cf.tracks); ++i)
+            if (playing_track(deque_at(cf.tracks, (unsigned)i))) playing = i + 1;
+        if (playing != cf.playing) {
+            cf.playing = playing;
+            widget_invalidate_force(cf.track_view, 0);
+        }
+    }
     if (!home.art || top != home.win || !widget_get_visible(home.art)) return;
     unsigned pos, n;
     void *r = queue_now(&pos, &n);

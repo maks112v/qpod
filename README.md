@@ -131,8 +131,9 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 ## iPod UI
 
 - **Home:** a list (Now Playing, Library, Coverflow…) beside the playing track's cover, instead of the carousel.
-- **Lists:** four rows per screen, full-width accent bar; **`>`** marks rows that open another list.
-- **Status bar:** play state, EQ, time, Bluetooth, Wi-Fi, battery. The Bluetooth codec (AAC, LDAC…) shows briefly on connect.
+- **Lists:** four rows per screen, full-width accent bar; **`>`** marks rows that open another list. A slim bar on the right edge shows where you are in a long list.
+- **Albums:** songs show their track numbers, the playing one marked at the right; the artist line only on compilations.
+- **Status bar:** play state, EQ, the page's title, Bluetooth, Wi-Fi, battery. Home shows the time instead. The Bluetooth codec (AAC, LDAC…) shows briefly on connect.
 - **Now Playing:** "3 of 12", large rounded cover beside title, artist and album, and a slim accent progress capsule.
 - **Visualizer:** swipe Now Playing to its fourth page: Spectrum, Oscilloscope, VU Meters or Halo. Tap to switch; your choice is kept. It follows what you hear, EQ included.
 - **Quick settings:** pull down from the top edge.
@@ -149,13 +150,13 @@ Charge limit applies while the Q2 is on; charging while it's powered off is stoc
 
 | Control                   | What it does                                                                                                                                                     |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Wheel**                 | One row per tick; spin to speed up. On Now Playing it controls volume, seeking or playback modes, depending on the bottom control. |
-| **Centre button**         | Opens the highlighted item. On Now Playing, cycles Progress → Seek → Playback mode. Double-click turns the screen off. |
+| **Wheel**                 | One row per tick; spin to speed up. On Now Playing it controls volume, seeking, Shuffle or Repeat, depending on the bottom control. |
+| **Centre button**         | Opens the highlighted item. On Now Playing, cycles Progress → Seek → Shuffle → Repeat. Double-click turns the screen off. |
 | **Double Centre**         | Turns the screen off. On the lock screen, unlocks the player.                                                                                                   |
 | **Hold Centre**           | Now Playing: opens the player menu. Song: queue, favourite, playlist, go to album or artist. Album, artist, genre or folder: queue, shuffle, playlist; a Coverflow album: queue, shuffle, go to artist. |
 | **Hold Play/Pause**       | Opens Now Playing without changing playback.                                                                                                                    |
 
-On Now Playing, Seek adds a position thumb. Turn the wheel to move five seconds per tick, or drag the bar directly. After wheel seeking, Centre returns to Progress; without a change, it advances to Playback mode. List play stops after the last track in the selected album or queue and waits for another selection. Playback mode replaces the bar with the current mode; turn the wheel to select List play, Repeat one, Shuffle songs or Repeat all. The normal progress view keeps the wheel on volume, or lyric scrolling while lyrics are shown.
+On Now Playing, Seek adds a position thumb. Turn the wheel to move five seconds per tick, or drag the bar directly. After wheel seeking, Centre returns to Progress; without a change, it advances to Shuffle. Shuffle offers Off, Songs, Albums and All. Songs shuffles within the current album. Albums shuffles albums across the library while keeping disc and track order. All shuffles individual songs across the entire library. Audio settings and the player menu have the same Shuffle choices. Off plays in queue order and stops at the end. Repeat offers Off, One and All and keeps the Shuffle choice: One repeats the song. With Shuffle off, All starts the queue again after its end and Off stops there. Shuffle loops even with Repeat off. The normal progress view keeps the wheel on volume, or lyric scrolling while lyrics are shown.
 | **Hold Return** (iPod)    | Opens Now Playing; the next Return goes back.                                                                                                                    |
 | **Pull to search** (iPod) | At the top of Library (Local Songs), pull down until "Release to search" appears.                                                                                |
 
@@ -169,8 +170,8 @@ On Now Playing, Seek adds a position thumb. Turn the wheel to move five seconds 
 
 | Screen    | Wheel                  | Centre                                | Other                                                       |
 | --------- | ---------------------- | ------------------------------------- | ----------------------------------------------------------- |
-| **Photo** | Previous or next photo | Shows or hides "3 of 40" and the name | **Return** goes back                                        |
-| **Book**  | Turns the pages        | Shows or hides progress               | **Return** goes back; books reopen where you left off       |
+| **Photo** | Previous or next photo | Plays or pauses a slideshow; paused shows "3 of 40" and the name | **Return** goes back                                        |
+| **Book**  | Turns the pages        | Shows or hides the percentage         | **Return** goes back; books reopen where you left off; a line under the page shows progress |
 | **Video** | Volume                 | Toggles seek: 10 s per tick           | **Play/Pause** pauses, previous/next skip, **Return** exits |
 
 Video sound plays on the headphone jack, Bluetooth or a USB DAC. Music stops meanwhile. Decoding is software, so encodes near the screen's 375 × 320 play smoothest.
@@ -180,13 +181,14 @@ Video sound plays on the headphone jack, Bluetooth or a USB DAC. Music stops mea
 **Audio settings → Equalizer**:
 
 - **Curve:** the response is drawn above the list as you edit, with a ring on each band.
+- **Values:** Gain, Frequency, Q, Preamp and Balance open a large readout under the curve. Turn the wheel to change the value live, faster as you spin; **Centre** or **Return** finishes.
 - **Bands:** Peaking, Low shelf or High shelf; frequency, gain, Q, on/off, channel (both, **L** or **R**).
-- **Gain:** -24 to +24 dB on the wheel; picking one turns the band on, so the ten default bands (31 Hz to 16 kHz, Q 1.41) work as a graphic EQ.
-- **Frequency and Q:** tap the value (or press centre) to type one, or step with **Raise** / **Lower**.
+- **Gain:** -24 to +24 dB in 0.5 dB steps; changing it turns the band on, so the ten default bands (31 Hz to 16 kHz, Q 1.41) work as a graphic EQ.
+- **Frequency and Q:** 20 Hz to 20 kHz in 1/48 octave steps, Q 0.1 to 10 in 1/24 octave steps.
 - **Balance:** L 12.0 dB to R 12.0 dB in 0.5 dB steps; **R 1.0 dB** plays the left 1 dB quieter.
 - **Apply changes:** edits and presets take effect only when chosen.
 - **PEQ: ON/OFF:** applies at once and persists; the status-bar **EQ** icon follows it.
-- **Preamp:** **Auto** cuts just enough that boosts don't clip. Or pick +12 to -24 dB; above Auto, loud boosts can clip.
+- **Preamp:** **Auto**, past +12 dB, cuts just enough that boosts don't clip. Or choose +12 to -24 dB; above Auto, loud boosts can clip.
 
 ### Import a preset
 

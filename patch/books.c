@@ -457,13 +457,18 @@ unsigned book_back(const unsigned char *t, unsigned n, unsigned pos, int rows, i
 #define BOOK_X 24  /* the text's left edge, and its margin on the right */
 #define BOOK_Y 6   /* the first line's top: ten lines clear the glass's corners */
 #define BOOK_ROWS 10
+#if IPOD
+#define BOOK_TONE accent_tone(2) /* the light tone, as Now Playing's bar */
+#else
+#define BOOK_TONE 0xaaaaaa
+#endif
 #define BOOKS_MAX 500 /* ponytail: ringnav navigates at most MAX_ENTRIES (512) rows */
 #define MARKS_N 64    /* books whose page is kept, the most recently read first */
 
 enum { LIST, READER };
 enum { READY, PREPARING, BAD };
 static struct {
-    void *page, *list, *view, *reader, *sheet, *info;
+    void *page, *list, *view, *reader, *sheet, *info, *head; /* head: the reader's page_title */
     char **path; /* the books, by path */
     int n, screen, target, current, state, info_on;
     const char *file; /* the text read: the .txt, or the EPUB's in BOOK_DIR */
@@ -533,6 +538,8 @@ static void info(void) {
     if (bk.state)
         tk_snprintf(caption, sizeof caption, "%s",
                     bk.state == BAD ? "Can't open this book" : "Preparing\xe2\x80\xa6");
+    else if (IPOD) /* the title is in the status bar */
+        tk_snprintf(caption, sizeof caption, "%u%%", pct);
     else
         tk_snprintf(caption, sizeof caption, "%u%%  %s", pct, title(bk.path[bk.current], name));
     widget_set_text_utf8(bk.info, caption);
@@ -596,6 +603,8 @@ static int to_reader(const void *unused) {
     bk.key |= !bk.key;
     bk.screen = READER;
     bk.info_on = 0;
+    char name[256];
+    widget_set_text_utf8(bk.head, title(path, name));
     widget_set_visible(bk.list, 0, 0);
     widget_set_visible(bk.reader, 1, 0);
     bk.file = path;
@@ -703,6 +712,15 @@ void books_paint(void *w, void *canvas) {
     bk.prev =
         bk.base + book_back(bk.buf, bk.len, bk.pos - bk.base, BOOK_ROWS, width, measure, canvas);
     canvas_set_text_color(canvas, color);
+    /* How far in, always: a hairline under the page, filled to the page's end. */
+    unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
+    int y = BOOK_Y + BOOK_ROWS * BOOK_LH + 6, span = 375 - 2 * CF_EDGE;
+    int done = bk.size ? (int)((double)bk.end * span / bk.size) : 0;
+    canvas_set_fill_color(canvas, rgba(0x2b2b2b, 255));
+    canvas_fill_rect(canvas, CF_EDGE, y, span, 2);
+    canvas_set_fill_color(canvas, rgba(BOOK_TONE, 255));
+    canvas_fill_rect(canvas, CF_EDGE, y, done > span ? span : done, 2);
+    canvas_set_fill_color(canvas, fill);
 }
 
 /* Videos (docs/internals.md#videos): patch/video.c draws on /dev/fb0 and plays the sound while
@@ -807,6 +825,8 @@ void books_open(const char *root, int videos) {
     bk.reader = widget_factory_create_widget(f, "view", page, 0, 0, 375, h);
     bk.sheet = widget_factory_create_widget(f, "view", bk.reader, 0, 0, 375, h);
     bk.info = bottom_caption(bk.reader, h);
+    bk.head = page_title(bk.reader, ""); /* the status bar's, never shown in the page */
+    widget_set_visible(bk.head, 0, 0);
     widget_set_visible(bk.reader, 0, 0);
     bk.buf = calloc(BOOK_WIN, 1);
     bk.path = calloc(BOOKS_MAX, sizeof *bk.path);
