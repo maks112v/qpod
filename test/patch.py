@@ -4686,7 +4686,8 @@ if variant=='ipod':
         m.call(); m.paint(view); i=min(k,len(items)-1); assert m.selected(view)==i
         y=geometry(m,items[i])[1]-signed(m.get(view+O['SCROLL_Y']))
         assert 0<=y and y+SET['ROW']<=SET['ROWS']*SET['ROW'], (k,y)
-        assert len(m.bands)==SET['ROW']+1 and {b[2] for b in m.bands}=={375}
+        assert len([b for b in m.bands if b[2]==375])==SET['ROW']+1
+        assert {b[2] for b in m.bands}<={375,O['SCROLLBAR_W']}
     assert m.confirm()==11 and m.dispatched()[0][1]==buttons[-1]; passed()
     m.click(buttons[2]); assert m.selected(view)==2; passed()
 
