@@ -715,7 +715,10 @@ void books_paint(void *w, void *canvas) {
     /* How far in, always: a hairline under the page, filled to the page's end. */
     unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
     int y = BOOK_Y + BOOK_ROWS * BOOK_LH + 6, span = 375 - 2 * CF_EDGE;
-    int done = bk.size ? (int)((float)bk.end / bk.size * span) : 0;
+    unsigned end = bk.end, size = bk.size;
+    /* Scale large files together so the pixel numerator fits in 32 bits. */
+    while (size > ~0u / (unsigned)span) end >>= 1, size >>= 1;
+    int done = size ? (int)(end * (unsigned)span / size) : 0;
     canvas_set_fill_color(canvas, rgba(0x2b2b2b, 255));
     canvas_fill_rect(canvas, CF_EDGE, y, span, 2);
     canvas_set_fill_color(canvas, rgba(BOOK_TONE, 255));
