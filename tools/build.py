@@ -49,6 +49,9 @@ HOOKS = {
     'localmusic_page_init': (0x524424, 'ringnav_localmusic'),
     'playermore_page_init': (0x528c14, 'ringnav_playermore'),
     'playlist_rows': (0x4b2dac, 'ringnav_playlist_rows'),
+    'playset_playmode_page_init': (0x4b8e70, 'ringnav_playmode'),
+    'config_playmode': (0x4f3fe8, 'ringnav_playmode_config'),
+    'mclLoadPlayList': (0x5aa8d4, 'ringnav_playlist_load'),
     # Library lists: an Unknown row with no songs is dropped
     'load_localclass_list': (0x5088cc, 'ringnav_localclass'),
     # The three songtable writers; Coverflow keeps its album list until one runs.
@@ -75,7 +78,9 @@ IPOD_HOOKS = {'widget_on_paint_background': (0x65c77c, 'ringnav_paint_bg'),
               'dialog_confirminfo_dialog_init': (0x4989ec, 'ringnav_confirm_dialog'),
               'style_get_color': (0x649f6c, 'ringnav_style_color'),
               'image_manager_add': (0x6445d4, 'ringnav_image_add'),
-              'on_wm_keydown_before_fun': (0x4e8424, 'ringnav_keydown')}
+              'on_wm_keydown_before_fun': (0x4e8424, 'ringnav_keydown'),
+              # The album page's rows, after each stock (re)build: track numbers and the playing mark
+              'albuminfo_rows': (0x4a67e8, 'ringnav_albuminfo_rows')}
 # The payload's stock_<name>_trampoline resumes each hook past its 3-word PIC prologue, in this order.
 TRAMPOLINES = {'keyup': 'on_wm_keyup_before_fun', 'touch': 'on_wm_tsdown_before_fun', 'paint': 'widget_on_paint_border',
                'dispatch': 'widget_dispatch', 'keylong': 'on_wm_keylong_fun', 'eq': 'set_equalizer_value',
@@ -88,7 +93,9 @@ TRAMPOLINES = {'keyup': 'on_wm_keyup_before_fun', 'touch': 'on_wm_tsdown_before_
                'about': 'systemset_about_page_init', 'folder': 'folder_page_init', 'folder_back': 'folder_back',
                'input': 'window_manager_dispatch_input_event', 'buzzer': 'buzzeer_switch',
                'power': 'systemset_powermanager_page_init', 'audioset': 'playset_playset_page_init',
-               'playermore': 'playermore_page_init', 'playlist_rows': 'playlist_rows'}
+               'playermore': 'playermore_page_init', 'playlist_rows': 'playlist_rows',
+               'playmode': 'playset_playmode_page_init', 'playmode_config': 'config_playmode',
+               'playlist_load': 'mclLoadPlayList', 'albuminfo_rows': 'albuminfo_rows'}
 # Every audited stock PIC prologue resolves this GOT base.
 GP = 0xa26cc0
 # iPod: style_get_gradient has no PIC prologue. It is a leaf that null-checks the style and its
@@ -430,6 +437,7 @@ PRIVATE_FUNCTIONS = {
     "folder_refresh": 0x52176c,  # folder_page's navbar and table from p_deque_showlist (its init, back)
     "playlist_rows": 0x4b2dac,  # playlist page's init and foreground rebuild
     "playlist_create": 0x4b1a88,  # stock navbar Create: opens addplaylist_dialog unless adding is busy
+    "albuminfo_rows": 0x4a67e8,  # album page: its action bar and track rows from p_deque_showlist
 }
 GLOBALS = ['g_backlight_status', 'g_lockscreen_pageflag', 'g_testmode_flag',
            'g_guideflag', 'g_poweroff_state', 'g_usblink_status', 'bt__recv_pageflag',

@@ -283,31 +283,28 @@ list_item_create label_create list_view_create scroll_view_create widget_use_sty
 widget_set_text_utf8 widget_on widget_get_prop_int widget_set_prop_int widget_destroy_children
 widget_resize scroll_view_set_offset widget_invalidate_force timer_add timer_remove
 navigator_back write_int_config widget_factory widget_factory_create_widget widget_set_prop_str
-widget_get_text widget_set_focused widget_lookup window_manager pages_set_active_by_name
+widget_set_name widget_set_visible
 canvas_set_fill_color canvas_fill_rect canvas_get_vgcanvas vgcanvas_save vgcanvas_restore vgcanvas_translate
 vgcanvas_begin_path vgcanvas_close_path vgcanvas_move_to vgcanvas_line_to vgcanvas_arc vgcanvas_fill vgcanvas_stroke
 vgcanvas_set_fill_color vgcanvas_set_stroke_color vgcanvas_set_fill_linear_gradient vgcanvas_set_line_width
 """.split() for r, a in [PROTOTYPES[n]]) + r"""
 """
 SHIM = r"""
-static struct { int parent, h, bg; char text[160]; handler click, destroy, keyup, change, focus; void *ctx; } w[4096];
+static struct { int parent, h, bg; char text[160]; handler click, destroy, keyup; void *ctx; } w[4096];
 static int count = 1, timers, removed, backs;
 static int (*timer_fn)(const void *);
 volatile unsigned char g_equalizer_flag;
 int stock_eq_trampoline(int mode) { return mode; }
 static void *make(void *parent, int h) {
     ++count; w[count].parent = (int)(long)parent; w[count].h = h;
-    w[count].text[0] = 0; w[count].click = w[count].change = w[count].focus = 0; w[count].bg = 0; return (void *)(long)count;
+    w[count].text[0] = 0; w[count].click = 0; w[count].bg = 0; return (void *)(long)count;
 }
-/* The value menu's edit: its text, the keyboard it asks for, whether it took focus. */
-static int edit_widget, focused;
-static char keyboard[32];
 void *widget_factory(void) { return 0; }
 void *widget_factory_create_widget(void *f, const char *type, void *p, int x, int y, int ww, int h) {
-    (void)f; (void)x; (void)y; (void)ww; void *e = make(p, h);
-    if (!strcmp(type, "edit")) { edit_widget = (int)(long)e; keyboard[0] = 0; focused = 0; }
-    return e;
+    (void)f; (void)type; (void)x; (void)y; (void)ww; return make(p, h);
 }
+int widget_set_name(void *x, const char *name) { (void)x; (void)name; return 0; }
+int widget_set_visible(void *x, int v, int r) { (void)x; (void)v; (void)r; return 0; }
 /* The curve's drawing (peq_paint) is checked on the device; here it only has to link. */
 int canvas_set_fill_color(void *c, unsigned v) { (void)c; (void)v; return 0; }
 int canvas_fill_rect(void *c, int x, int y, int ww, int h) { (void)c; (void)x; (void)y; (void)ww; (void)h; return 0; }
@@ -327,39 +324,7 @@ int vgcanvas_set_fill_linear_gradient(void *vg, float a, float b, float c, float
 void draw_centred(void *canvas, const unsigned *s, unsigned n, const void *r, unsigned px, unsigned color) {
     (void)canvas; (void)s; (void)n; (void)r; (void)px; (void)color;
 }
-int widget_set_prop_str(void *x, const char *k, const char *v) {
-    if ((long)x == edit_widget && !strcmp(k, "keyboard")) snprintf(keyboard, sizeof(keyboard), "%s", v);
-    return 0;
-}
-const unsigned *widget_get_text(void *x) {
-    static unsigned wide[160];
-    unsigned i = 0;
-    for (; w[(long)x].text[i]; ++i) wide[i] = (unsigned char)w[(long)x].text[i];
-    wide[i] = 0; return wide;
-}
-int widget_set_focused(void *x, int v) {
-    if ((long)x == edit_widget && (focused = v) && w[edit_widget].focus) w[edit_widget].focus(0, 0);
-    return 0;
-}
-/* The stock keyboard window (4000) and its page panel (4001); the page it was switched to. */
-static char page[16];
-void *window_manager(void) { return (void *)3999L; }
-void *widget_lookup(void *x, const char *name, int recursive) {
-    (void)recursive;
-    if ((long)x == 3999 && !strcmp(name, "kb_default_t9")) return (void *)4000L;
-    return (long)x == 4000 && !strcmp(name, "panel") ? (void *)4001L : 0;
-}
-int pages_set_active_by_name(void *x, const char *name) { if ((long)x == 4001) snprintf(page, sizeof(page), "%s", name); return 0; }
-const char *shim_page(void) { return page; }
-const char *shim_edit(void) { return edit_widget ? w[edit_widget].text : ""; }
-const char *shim_keyboard(void) { return keyboard; }
-int shim_focused(void) { return focused; }
-/* Typing a value and closing the keyboard: the edit reports EVT_VALUE_CHANGED. */
-void shim_run(void);
-void shim_type(const char *text) {
-    snprintf(w[edit_widget].text, 160, "%s", text);
-    w[edit_widget].change(0, 0); shim_run();
-}
+int widget_set_prop_str(void *x, const char *k, const char *v) { (void)x; (void)k; (void)v; return 0; }
 void *list_item_create(void *p, int x, int y, int ww, int h) { (void)x; (void)y; (void)ww; return make(p, h); }
 void *label_create(void *p, int x, int y, int ww, int h) { (void)x; (void)y; (void)ww; return make(p, h); }
 void *list_view_create(void *p, int x, int y, int ww, int h) { (void)x; (void)y; (void)ww; return make(p, h); }
@@ -370,23 +335,17 @@ unsigned widget_on(void *x, unsigned type, handler f, void *ctx) {
     long i = (long)x;
     if (type == 0x10c) { w[i].click = f; w[i].ctx = ctx; }
     else if (type == 0x0c) w[i].destroy = f;
-    else if (type == 0x0e) w[i].change = f;
-    else if (type == 0x10e) w[i].focus = f;
     else w[i].keyup = f;
     return 1;
 }
 int widget_get_prop_int(void *x, const char *k, int d) { return (long)x == 1 && !strcmp(k, "h") ? 290 : d; }
-static int selection, offset;
 int widget_set_prop_int(void *x, const char *k, int v) {
     if (!strcmp(k, "style:normal:bg_color")) w[(long)x].bg = v;
-    if (!strcmp(k, "_ringnav_index")) selection = v;
     return 0;
 }
 int widget_destroy_children(void *x) { (void)x; count = 1; return 0; }
 int widget_resize(void *x, int ww, int h) { (void)ww; w[(long)x].h = h; return 0; }
-int scroll_view_set_offset(void *x, int a, int b) { (void)x; (void)a; offset = b; return 0; }
-int shim_selection(void) { return selection; }
-int shim_offset(void) { return offset; }
+int scroll_view_set_offset(void *x, int a, int b) { (void)x; (void)a; (void)b; return 0; }
 int widget_invalidate_force(void *x, void *y) { (void)x; (void)y; return 0; }
 unsigned timer_add(int (*f)(const void *), void *ctx, unsigned ms) { (void)ctx; (void)ms; timer_fn = f; return ++timers; }
 int timer_remove(unsigned id) { (void)id; timer_fn = 0; ++removed; return 0; }
@@ -418,6 +377,11 @@ int shim_click(const char *text, int run) {
 }
 void shim_return(void) { int event[8] = {0}; event[6] = 170; w[1].keyup(0, event); shim_run(); }
 void shim_close(void) { w[1].destroy(0, 0); }
+/* The value screen's large value (the page's 56px label). */
+const char *shim_value(void) {
+    for (int i = 2; i <= count; ++i) if (w[i].parent == 1 && w[i].h == 56) return w[i].text;
+    return "";
+}
 const char *shim_title(void) {
     for (int i = 2; i <= count; ++i) if (w[i].parent == 1 && w[i].h == 48) return w[i].text;
     return "";
@@ -432,7 +396,8 @@ def editor_check(lib, tmp):
     (tmp/'shim.c').write_text('#include "peq.h"\n' + SHIM)
     ui = compile_host(tmp, 'peq_ui.so', ROOT/'patch/peq_ui.c', ROOT/'patch/peq.c', tmp/'shim.c',
                       '-I', ROOT/'patch', '-include', tmp/'shim.h')
-    ui.shim_title.restype = C.c_char_p
+    ui.shim_title.restype = ui.shim_value.restype = C.c_char_p
+    ui.peq_key.argtypes = [C.c_void_p, C.c_uint, C.c_int]
     data, saved = tmp/'root/mnt/data', tmp/'root/mnt/data/peq-presets'
     saved.mkdir(parents=True); (tmp/'root/mnt/mmc/EQ').mkdir(parents=True)
     active = data/'peq-active'
@@ -444,6 +409,10 @@ def editor_check(lib, tmp):
         p = Preset(); assert lib.peq_load(bytes(active), C.byref(p)); return p
     def click(text): assert ui.shim_click(text.encode(), 1), (text, ui.shim_title())
     title = lambda: ui.shim_title().decode()
+    value = lambda: ui.shim_value().decode()
+    # The value screen: the wheel (n steps, as ringnav's spin ramp scales them) and Centre, which finishes.
+    def wheel(n): assert ui.peq_key(1, 173 if n > 0 else 172, abs(n)) == 1
+    def centre(): assert ui.peq_key(1, 218, 0) == 1; ui.shim_run()
 
     assert lib.peq_save(bytes(active), C.byref(preset(enabled=1)), 1) == 1
     # With the stock flag clear no filter runs, so the saved ON reads OFF.
@@ -459,7 +428,8 @@ def editor_check(lib, tmp):
     # iPod rows are transparent, so the list itself must paint black, not the theme's light card.
     ui.shim_list_bg.restype = C.c_uint; assert ui.shim_list_bg() == 0xff000000
     # Bypass switches at once but keeps unapplied band edits out of the active preset.
-    click('1  '); click('Gain +0.0 dB'); assert title() == 'PEQ Band 1 Gain'; click('+1.0 dB'); ui.shim_return()
+    click('1  '); click('Gain +0.0 dB'); assert title() == 'PEQ Band 1 Gain' and value() == '+0.0 dB'
+    wheel(2); assert value() == '+1.0 dB'; centre(); ui.shim_return()
     click('PEQ On')
     assert read().bypass == 1 and read().bands[0].gain == 0 and ui.shim_flag() == 0
     click('Apply changes')
@@ -501,46 +471,40 @@ def editor_check(lib, tmp):
     # Overlapping boosts add up (+6.5 and +6 dB at 1 kHz); cuts alone leave 0 dB.
     p = preset(enabled=1, gain=6.0); p.count = 2; p.bands[1] = p.bands[0]; p.preamp = -1
     assert lib.peq_save(bytes(active), C.byref(p), 1) == 1
-    ui.shim_close(); ui.shim_open(); click('1  '); click('Gain +6.0 dB'); click('+6.5 dB'); ui.shim_return(); click('Apply changes')
+    ui.shim_close(); ui.shim_open(); click('1  '); click('Gain +6.0 dB'); wheel(1); centre(); ui.shim_return(); click('Apply changes')
     assert read().preamp == -1, read().preamp  # a preamp off Auto (here the preset's) sticks through band edits
-    click('Preamp -1.0 dB'); assert title() == 'PEQ Preamp' and ui.shim_selection() == 27  # opens on -1.0
-    click('Auto (-12.5 dB)'); click('Apply changes')
+    click('Preamp -1.0 dB'); assert title() == 'PEQ Preamp' and value() == '-1.0 dB'
+    wheel(30); assert value() == 'Auto -12.5 dB'; centre(); click('Apply changes')  # Auto is past the top
     assert abs(read().preamp + 12.5) < 0.05, read().preamp
     click('1  '); click('Band On'); ui.shim_return(); click('2  '); click('Band On'); ui.shim_return(); click('Apply changes')
     assert math.copysign(1, read().preamp) == 1 and read().preamp == 0, read().preamp  # +0: shown as 0.0
     # Channels cycle on enabled bands; headroom takes the louder side, balance only turns one down.
-    click('1  Peaking 31 Hz Off'); click('Gain +6.5 dB'); click('+7.5 dB'); click('Channels Both')  # picking a gain turns the band on
+    click('1  Peaking 31 Hz Off'); click('Gain +6.5 dB'); wheel(2); centre(); click('Channels Both')  # scrubbing a gain turns the band on
     assert title() == 'PEQ Band 1'
     click('Channels Left'); ui.shim_return()
-    # Balance one row opens a picker, L 12 to R 12 dB in 0.5 dB steps, on the current value.
-    click('Balance Centre'); assert title() == 'PEQ Balance'
-    assert (ui.shim_selection(), ui.shim_offset()) == (24, 24 * 48 - 96)  # 5 rows of 48 shown
-    click('R 12.0 dB'); assert title() == 'PEQ'; click('Balance R 12.0 dB')
-    assert (ui.shim_selection(), ui.shim_offset()) == (48, 49 * 48 - 240)  # clamped to the end
-    ui.shim_return(); assert title() == 'PEQ'; click('Balance R 12.0 dB'); click('L 0.5 dB'); click('Apply changes')
+    # Balance scrubs L 12 to R 12 dB in 0.5 dB steps from the current value, live, clamped at the ends.
+    click('Balance Centre'); assert title() == 'PEQ Balance' and value() == 'Centre'
+    wheel(30); assert value() == 'R 12.0 dB'; centre(); assert title() == 'PEQ'
+    click('Balance R 12.0 dB'); wheel(-25); assert value() == 'L 0.5 dB'
+    ui.shim_return(); assert title() == 'PEQ'; click('Apply changes')
     r = read(); assert (r.bands[0].enabled, r.balance) == (3, -0.5) and abs(r.preamp + 7.5) < 0.05, (r.bands[0].enabled, r.balance)
     assert ui.shim_click(b'1  Peaking 31 Hz R +7.5 dB', 0) and ui.shim_click(b'Balance L 0.5 dB', 0)
-    # Frequency and Q open a value menu: an edit with the value (keyboard on tap or centre), then Raise/Lower.
-    ui.shim_edit.restype = ui.shim_keyboard.restype = C.c_char_p
-    edit = lambda: ui.shim_edit().decode()
+    # Frequency scrubs in 1/48 octave and Q in 1/24, at least 1 Hz or 0.01 a step, within 20 Hz to 20 kHz
+    # and 0.1 to 10.
     ui.shim_close(); ui.shim_open(); click('1  Peaking 31 Hz R'); click('Frequency 31 Hz')
-    assert title() == 'PEQ Band 1 Frequency (Hz)' and edit() == '31' and ui.shim_keyboard() == b'kb_default_t9'
-    click('Lower 1 Hz'); click('Lower 1 Hz'); assert edit() == '29'
-    click('Step 1 Hz'); click('Lower 10 Hz'); assert edit() == '20'  # clamped at 20 Hz
-    click('Step 10 Hz'); click('Raise 100 Hz'); assert edit() == '120'
-    ui.shim_page.restype = C.c_char_p
-    assert not ui.shim_focused(); click('120'); assert ui.shim_focused()  # the centre button opens the keyboard
-    assert ui.shim_page() == b'symnum'  # on its number keys
-    ui.shim_type(b'2500'); assert edit() == '2500'
-    ui.shim_type(b'abc'); assert edit() == '2500'      # not a number: unchanged
-    ui.shim_type(b'99999'); assert edit() == '20000'   # clamped like Raise
-    ui.shim_type(b'1000.5'); assert edit() == '1000'   # kept exactly, shown whole
+    assert title() == 'PEQ Band 1 Frequency (Hz)' and value() == '31 Hz'
+    wheel(-1); assert value() == '30 Hz'  # 30.6 rounds back to 31, so the step is 1 Hz
+    wheel(-100); assert value() == '20 Hz'
+    wheel(48); assert value() == '40 Hz'  # an octave
+    wheel(1000); assert value() == '20000 Hz'
+    wheel(-4 * 48); assert value() == '1250 Hz'
     ui.shim_return(); assert title() == 'PEQ Band 1'
-    click('Q 1.41'); assert title() == 'PEQ Band 1 Q' and edit() == '1.41'
-    click('Raise 0.05'); assert edit() == '1.46'
-    ui.shim_type(b'0.7'); assert edit() == '0.70'
-    ui.shim_return(); ui.shim_return(); click('Apply changes')
-    r = read(); assert (r.bands[0].frequency, round(r.bands[0].q, 9)) == (1000.5, 0.7), (r.bands[0].frequency, r.bands[0].q)
+    click('Q 1.41'); assert title() == 'PEQ Band 1 Q' and value() == '1.41'
+    wheel(24); assert value() == '2.82'
+    wheel(-1000); assert value() == '0.10'
+    wheel(1); assert value() == '0.11'
+    centre(); ui.shim_return(); click('Apply changes')
+    r = read(); assert (r.bands[0].frequency, round(r.bands[0].q, 9)) == (1250, 0.11), (r.bands[0].frequency, r.bands[0].q)
     print('PEQ editor: bypass, apply, auto preamp, channels, balance, frequency and Q, load, failed saves, delete and close passed.')
 
 # Drives patch/peq_player.c the way hciplayer's af chain does. Built 32-bit like the device,
